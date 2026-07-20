@@ -35,11 +35,22 @@ fps: 30
 # goosebump(소름) / energetic(강렬) / dreamy(잔잔) / retro(레트로)
 style: "goosebump"
 
-# --- 가사 받아쓰기 (Whisper) ---
-language: "ko"           # ko/en/ja/... 미지정(null)이면 자동 감지
+# --- 가사 ---
+# 정답 가사를 주면 Whisper 자동 자막이 틀려도 정답으로 교정합니다
+# (텍스트=정답, 타이밍=Whisper 강제 정렬). 세 가지 방법 중 하나:
+#   1) 송북(엑셀) + 곡명 — 무드로 스타일도 자동 선택
+songbook: "Mindtrack.xlsx"
+song: "Born to Win"
+#   2) 가사 파일 직접
+# lyrics_file: "lyrics.txt"
+#   3) 정답 가사 없이 자동 받아쓰기만 (위 항목 모두 비우기)
+keep_adlibs: true          # 괄호 애드립/백보컬 줄 포함 여부
+
+language: "en"           # ko/en/ja/... 미지정(null)이면 자동 감지
 whisper_model: "small"   # tiny/base/small/medium/large-v3 (클수록 정확·느림)
+# style: "goosebump"       # 미지정 시 곡 무드로 자동 결정
 # lyrics_srt: "lyrics.srt"   # 이미 만든 SRT 가 있으면 지정 → 받아쓰기 생략
-# output_srt: "lyrics.srt"   # 받아쓴 가사를 저장할 경로
+# output_srt: "lyrics.srt"   # 받아쓴/교정된 가사를 저장할 경로
 
 # --- 화면 전환 세부 ---
 min_transition_gap: 0.45   # 전환 사이 최소 간격(초) — 너무 잦은 컷 방지

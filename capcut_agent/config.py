@@ -41,8 +41,14 @@ class AgentConfig:
         beat_subdivision: 비트를 몇 개당 하나씩 전환에 사용할지(1=매 비트, 2=격박 등).
         emphasize_lyrics: True 면 가사가 나오는 구간의 비트를 강박으로 승격해
             그 구간의 화면 전환을 강렬하게 + 박자에 정확히 맞춥니다.
+        songbook: 곡별 정답 가사가 담긴 엑셀 경로(Mindtrack 형식).
+        song: songbook 안에서 사용할 곡명. 정답 가사·무드를 가져옵니다.
+        lyrics_text: 정답 가사 원문(직접 입력). songbook/song 대신 사용 가능.
+        lyrics_file: 정답 가사가 담긴 텍스트 파일 경로.
+        keep_adlibs: 괄호 애드립/백보컬 줄을 자막에 포함할지.
+        style: 스타일 프리셋. None 이면 곡 무드로 자동 결정(없으면 goosebump).
         lyrics_srt: 이미 준비된 SRT 경로. 지정 시 Whisper 대신 이 파일 사용.
-        output_srt: 받아쓴 가사를 저장할 SRT 경로. 미지정 시 draft 옆에 생성.
+        output_srt: 받아쓴/교정된 가사를 저장할 SRT 경로. 미지정 시 draft 옆에 생성.
     """
 
     audio_path: str
@@ -60,7 +66,13 @@ class AgentConfig:
     height: int = 1920
     fps: int = 30
 
-    style: str = "goosebump"
+    style: Optional[str] = None
+
+    songbook: Optional[str] = None
+    song: Optional[str] = None
+    lyrics_text: Optional[str] = None
+    lyrics_file: Optional[str] = None
+    keep_adlibs: bool = True
 
     language: Optional[str] = None
     whisper_model: str = "small"
@@ -133,6 +145,10 @@ class AgentConfig:
                 raise FileNotFoundError(f"배경 파일을 찾을 수 없습니다: {path}")
         if self.lyrics_srt and not os.path.isfile(self.lyrics_srt):
             raise FileNotFoundError(f"SRT 파일을 찾을 수 없습니다: {self.lyrics_srt}")
+        if self.songbook and not os.path.isfile(self.songbook):
+            raise FileNotFoundError(f"송북(엑셀) 파일을 찾을 수 없습니다: {self.songbook}")
+        if self.lyrics_file and not os.path.isfile(self.lyrics_file):
+            raise FileNotFoundError(f"가사 파일을 찾을 수 없습니다: {self.lyrics_file}")
 
     def resolved_output_srt(self) -> str:
         """가사 SRT 저장 경로. 미지정 시 draft_name 기반 기본값."""

@@ -23,6 +23,10 @@
   비트 시각에 놓여 **박자에 정확히** 맞습니다.
 - **가사 구간 박자 강조** — 가사가 나오는 구간의 비트를 강박으로 승격해, 그
   "소름 포인트"에서 **더 강렬한 전환(섬광·글리치)을 짧고 타이트하게** 꽂습니다.
+- **정답 가사 교정** — 정답 가사를 주면 Whisper 자동 자막이 틀려도 **정답으로 교정**합니다.
+  텍스트는 정답, 타이밍은 Whisper 를 강제 정렬(forced-alignment)로 이식해, 오탈자·오인식
+  없이 **정확한 가사가 정확한 타이밍에** 놓입니다. 반복 후렴도 한 줄도 잃지 않습니다.
+  곡별 정답 가사는 **송북 엑셀**(곡명·무드·가사)로 관리하며, 무드로 스타일도 자동 선택됩니다.
 - **비트 동기 전환** — librosa 로 비트/온셋/타악 에너지를 분석, 드롭 구간은 더 강렬한 전환.
 - **가사 자동 자막** — faster-whisper(또는 openai-whisper) 받아쓰기 → 자막 트랙 + 입장 애니.
 - **스타일 프리셋** — `goosebump`(소름) · `energetic`(강렬) · `dreamy`(잔잔) · `retro`(레트로).
@@ -71,11 +75,37 @@ python -m capcut_agent run \
   --style goosebump \
   --language ko
 
+# 정답 가사로 자동 자막 교정 (송북 엑셀 + 곡명 → 무드로 스타일 자동)
+python -m capcut_agent run \
+  --audio "Born to Win.mp3" --background-dir ./clips \
+  --songbook Mindtrack.xlsx --song "Born to Win" \
+  --draft-folder "~/Movies/CapCut/User Data/Projects/com.lveditor.draft"
+
 # 폴더째로 넣기 (안의 영상/이미지를 이름순으로 모두 사용)
 python -m capcut_agent run \
   --audio song.mp3 --background-dir ./clips \
   --draft-folder "~/Movies/CapCut/User Data/Projects/com.lveditor.draft"
 ```
+
+### 정답 가사 교정 (Whisper 오인식 바로잡기)
+
+노래 받아쓰기는 반주에 섞여 오탈자가 잦습니다. **정답 가사**를 주면 그 텍스트를
+그대로 쓰고 Whisper 는 **타이밍만** 제공하도록 강제 정렬합니다.
+
+```bash
+# 1) 송북 엑셀 + 곡명 (무드로 스타일도 자동 선택)
+--songbook Mindtrack.xlsx --song "Born to Win"
+
+# 2) 가사 텍스트 파일
+--lyrics-file lyrics.txt
+
+# 3) 애드립/백보컬 (…) 줄 제외하고 싶으면
+--no-adlibs
+```
+
+송북 엑셀은 `가사 원문` 시트(`곡명 | 분위기 | 파일 | 길이 | 공개 링크 | 가사 원문`)와
+`분위기 가이드` 시트를 읽습니다. 무드(각성/버팀/확신/도약/도착/위로)는 스타일
+프리셋과 배경 색감 가이드로 매핑됩니다.
 
 ### 3) 계획만 미리보기 (초안 생성 X)
 

@@ -19,3 +19,6 @@ faster-whisper>=1.0.0
 
 # 설정 파일 파싱
 PyYAML>=6.0
+
+# 송북(곡별 정답 가사) 엑셀 읽기
+openpyxl>=3.1.0

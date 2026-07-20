@@ -59,6 +59,10 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
         "draft_name": args.name,
         "style": args.style,
         "clip_order": args.clip_order,
+        "songbook": args.songbook,
+        "song": args.song,
+        "lyrics_file": args.lyrics_file,
+        "keep_adlibs": args.keep_adlibs,
         "language": args.language,
         "whisper_model": args.whisper_model,
         "lyrics_srt": args.lyrics_srt,
@@ -68,15 +72,52 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
         if val is not None:
             setattr(config, key, val)
 
-    # 스타일 유효성 조기 검증(오타 즉시 알림).
-    get_preset(config.style)
+    # 스타일 유효성 조기 검증(지정된 경우만; None 이면 곡 무드로 자동 결정).
+    if config.style is not None:
+        get_preset(config.style)
     return config
 
 
-def _get_lyrics(config: AgentConfig, beatmap) -> list:
-    from .lyrics import LyricSegment, clamp_segments_to_duration, transcribe
+def _resolve_official_lines(config: AgentConfig):
+    """정답 가사 줄과(있으면) 곡 정보를 돌려줍니다. 없으면 (None, None)."""
+    from .songbook import clean_lyric_lines, find_song, load_songbook
 
-    if config.lyrics_srt:
+    # 1) 직접 입력한 가사 텍스트
+    raw = None
+    if config.lyrics_text:
+        raw = config.lyrics_text
+    elif config.lyrics_file:
+        with open(config.lyrics_file, "r", encoding="utf-8") as f:
+            raw = f.read()
+    if raw:
+        return clean_lyric_lines(raw, keep_adlibs=config.keep_adlibs), None
+
+    # 2) 송북(엑셀) + 곡명
+    if config.songbook and config.song:
+        songs = load_songbook(config.songbook)
+        song = find_song(songs, config.song)
+        if song is None:
+            raise ValueError(
+                f"송북에서 곡 '{config.song}' 을 찾지 못했습니다. (총 {len(songs)}곡)"
+            )
+        return song.lyric_lines(keep_adlibs=config.keep_adlibs), song
+    return None, None
+
+
+def _get_lyrics(config: AgentConfig, beatmap, official) -> list:
+    from .lyrics import clamp_segments_to_duration, correct_lyrics, transcribe
+
+    if official:
+        # 정답 가사 + Whisper 타이밍 = 강제 정렬(교정).
+        _log(f"[가사] 정답 가사 {len(official)}줄 → Whisper({config.whisper_model}) 타이밍에 정렬(교정) 중…")
+        segments = correct_lyrics(
+            config.audio_path,
+            official,
+            model_size=config.whisper_model,
+            language=config.language,
+            duration=beatmap.duration,
+        )
+    elif config.lyrics_srt:
         _log(f"[가사] SRT 파일 사용: {config.lyrics_srt}")
         segments = _parse_srt(config.lyrics_srt)
     else:
@@ -119,6 +160,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     config = _build_config(args)
     config.validate_paths()
 
+    # 정답 가사 + 곡 정보(있으면). 무드로 스타일 자동 선택.
+    official, song = _resolve_official_lines(config)
+    if song is not None:
+        _log(f"[곡] {song.title} · 무드 '{song.mood}'"
+             + (f" · 길이 {song.duration:.0f}s" if song.duration else ""))
+        guide = song.background_guide()
+        if guide:
+            _log(f"     배경 가이드: {guide.get('video', '')} / 색감 {guide.get('color', '')}")
+        if config.style is None:
+            config.style = song.style()
+            _log(f"     무드 기반 스타일 자동 선택 → {config.style}")
+
     from .audio import analyze_audio
     from .draft_builder import plan_summary
 
@@ -126,7 +179,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     beatmap = analyze_audio(config.audio_path)
     _log(f"[오디오] {beatmap.duration:.1f}s · ~{beatmap.tempo:.0f} BPM · 비트 {len(beatmap.beats)}개")
 
-    lyrics = _get_lyrics(config, beatmap)
+    lyrics = _get_lyrics(config, beatmap, official)
 
     # 받아쓴 가사를 SRT 로 저장(재사용/수정 편의).
     if not config.lyrics_srt:
@@ -186,6 +239,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--draft-folder", dest="draft_folder", help="캡컷 초안 루트 폴더")
     run.add_argument("--name", help="초안(프로젝트) 이름")
     run.add_argument("--style", help=f"스타일 프리셋 ({', '.join(list_presets())})")
+    run.add_argument("--songbook", help="곡별 정답 가사 엑셀(Mindtrack 형식)")
+    run.add_argument("--song", help="송북 안에서 사용할 곡명(정답 가사·무드 가져옴)")
+    run.add_argument("--lyrics-file", dest="lyrics_file", help="정답 가사 텍스트 파일")
+    run.add_argument(
+        "--no-adlibs",
+        dest="keep_adlibs",
+        action="store_false",
+        default=None,
+        help="괄호 애드립/백보컬 줄을 자막에서 제외",
+    )
     run.add_argument("--language", help="Whisper 언어 코드(ko/en/…), 미지정 시 자동")
     run.add_argument("--whisper-model", dest="whisper_model", help="Whisper 모델 크기")
     run.add_argument("--lyrics-srt", dest="lyrics_srt", help="준비된 SRT 사용(받아쓰기 생략)")
