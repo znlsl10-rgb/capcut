@@ -54,6 +54,16 @@ python -m pip install -r requirements.txt
 
 ## 🚀 사용법
 
+> 💡 **가장 쉬운 로컬 실행은 [QUICKSTART.md](QUICKSTART.md) 참고** — `scripts/run.sh`(mac/Linux)
+> 또는 `scripts\run.bat`(Windows)가 가상환경·의존성·초안폴더 자동 감지까지 처리합니다.
+>
+> ```bash
+> ./scripts/run.sh run --audio "Born to Win.mp3" --background-dir ./clips \
+>     --songbook Mindtrack.xlsx --song "Born to Win"
+> ```
+> `--draft-folder` 를 생략하면 캡컷 초안 폴더를 자동으로 찾습니다
+> (`./scripts/run.sh detect` 로 위치 확인).
+
 ### 1) 설정 파일로 실행 (권장)
 
 `examples/config.example.yaml` 을 복사해 경로를 채운 뒤:

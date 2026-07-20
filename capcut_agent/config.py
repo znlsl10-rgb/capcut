@@ -52,7 +52,7 @@ class AgentConfig:
     """
 
     audio_path: str
-    draft_folder: str
+    draft_folder: Optional[str] = None
 
     background_path: Optional[str] = None
     background_paths: List[str] = field(default_factory=list)
@@ -135,6 +135,11 @@ class AgentConfig:
 
     def validate_paths(self) -> None:
         """실행 직전 파일 존재 여부를 검사합니다 (설정 로드 시점과 분리)."""
+        if not self.draft_folder:
+            raise FileNotFoundError(
+                "캡컷 초안 폴더를 찾지 못했습니다. --draft-folder 로 직접 지정하거나 "
+                "'python -m capcut_agent detect' 로 경로를 확인하세요."
+            )
         if not os.path.isfile(self.audio_path):
             raise FileNotFoundError(f"오디오 파일을 찾을 수 없습니다: {self.audio_path}")
         backgrounds = self.resolved_backgrounds()
@@ -167,7 +172,7 @@ def from_dict(data: Dict[str, Any]) -> AgentConfig:
     """dict 로부터 AgentConfig 생성. 알 수 없는 키는 extra 로 보관."""
     known = {k: v for k, v in data.items() if k in _KNOWN_FIELDS}
     extra = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS}
-    missing = [k for k in ("audio_path", "draft_folder") if k not in known]
+    missing = [k for k in ("audio_path",) if k not in known]
     if missing:
         raise ValueError(f"필수 설정 항목 누락: {', '.join(missing)}")
     if not any(k in known for k in ("background_path", "background_paths", "background_dir")):

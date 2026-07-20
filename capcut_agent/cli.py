@@ -36,11 +36,13 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
     if args.config:
         config = load_config(args.config)
     else:
-        if not args.audio or not args.draft_folder:
-            raise SystemExit("--config 없이 실행하려면 최소한 --audio 와 --draft-folder 가 필요합니다.")
+        if not args.audio:
+            raise SystemExit("--config 없이 실행하려면 최소한 --audio 가 필요합니다.")
         if not (args.background or args.background_dir):
             raise SystemExit("배경 소재가 필요합니다: --background <파일...> 또는 --background-dir <폴더>")
-        data = {"audio_path": args.audio, "draft_folder": args.draft_folder}
+        data = {"audio_path": args.audio}
+        if args.draft_folder:
+            data["draft_folder"] = args.draft_folder
         if args.background:
             data["background_paths"] = list(args.background)
         if args.background_dir:
@@ -57,6 +59,7 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
     # 그 외 스칼라 오버라이드.
     overrides = {
         "draft_name": args.name,
+        "draft_folder": args.draft_folder,
         "style": args.style,
         "clip_order": args.clip_order,
         "songbook": args.songbook,
@@ -71,6 +74,15 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
     for key, val in overrides.items():
         if val is not None:
             setattr(config, key, val)
+
+    # 초안 폴더 미지정 시 OS 표준 위치에서 자동 감지.
+    if not config.draft_folder:
+        from .capcut_paths import default_draft_folder
+
+        detected = default_draft_folder()
+        if detected:
+            config.draft_folder = detected
+            _log(f"[초안폴더] 자동 감지 → {detected}")
 
     # 스타일 유효성 조기 검증(지정된 경우만; None 이면 곡 무드로 자동 결정).
     if config.style is not None:
@@ -214,6 +226,23 @@ def cmd_styles(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_detect(args: argparse.Namespace) -> int:
+    from .capcut_paths import candidate_draft_folders, find_draft_folders
+
+    found = find_draft_folders()
+    if found:
+        print("발견된 캡컷 초안 폴더:")
+        for p in found:
+            print(f"  ✓ {p}")
+        print("\n--draft-folder 를 생략하면 위 첫 번째 폴더가 자동 사용됩니다.")
+    else:
+        print("표준 위치에서 캡컷 초안 폴더를 찾지 못했습니다. 확인한 후보 경로:")
+        for p in candidate_draft_folders():
+            print(f"  · {p}")
+        print("\n캡컷을 한 번 실행해 초안을 만든 뒤 다시 시도하거나, --draft-folder 로 직접 지정하세요.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="capcut_agent",
@@ -236,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sequential", "shuffle"],
         help="클립 배치 순서 (sequential=순환, shuffle=무작위)",
     )
-    run.add_argument("--draft-folder", dest="draft_folder", help="캡컷 초안 루트 폴더")
+    run.add_argument("--draft-folder", dest="draft_folder", help="캡컷 초안 루트 폴더(생략 시 자동 감지)")
     run.add_argument("--name", help="초안(프로젝트) 이름")
     run.add_argument("--style", help=f"스타일 프리셋 ({', '.join(list_presets())})")
     run.add_argument("--songbook", help="곡별 정답 가사 엑셀(Mindtrack 형식)")
@@ -258,6 +287,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     styles = sub.add_parser("styles", help="사용 가능한 스타일 목록")
     styles.set_defaults(func=cmd_styles)
+
+    detect = sub.add_parser("detect", help="캡컷 초안 폴더 자동 감지 결과 출력")
+    detect.set_defaults(func=cmd_detect)
 
     return parser
 
