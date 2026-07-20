@@ -90,6 +90,7 @@ def select_transition_points(
     downbeat_set = {round(t, 3) for t in beatmap.downbeats}
 
     threshold = _percentile(strengths, strong_percentile) if strengths else 1.0
+    median = _percentile(strengths, 0.5) if strengths else 0.0
 
     selected: List[TransitionPoint] = []
     last_time = -1e9
@@ -99,10 +100,12 @@ def select_transition_points(
             continue
         if t - last_time < min_gap:
             continue
+        # 가사 구간에서는 중간 세기 이상의 비트만 강박으로 승격(약한 오프비트 제외).
+        in_lyric = _in_windows(t, emphasis_windows)
         is_strong = (
             round(t, 3) in downbeat_set
             or strengths[i] > threshold
-            or _in_windows(t, emphasis_windows)
+            or (in_lyric and strengths[i] >= median)
         )
         selected.append(TransitionPoint(time=round(t, 3), strong=is_strong))
         last_time = t
