@@ -1,6 +1,6 @@
 """전환/애니메이션 스타일 프리셋.
 
-각 전환·애니메이션은 pyJianYingDraft 의 enum 멤버 이름(중국어 원문)을
+각 전환·애니메이션은 pyCapCut 의 enum 멤버 이름(CapCut 글로벌 영어 효과명)을
 문자열로 보관합니다. 실제 enum 해석은 draft_builder 에서 `getattr` 로 처리하며,
 이 모듈은 의존성 없이 "무엇을 언제 쓸지"만 결정하므로 테스트 가능합니다.
 
@@ -74,21 +74,23 @@ class StylePreset:
 
 
 # 프리셋 정의 -----------------------------------------------------------------
-# 멤버명은 pyJianYingDraft(剪映/CapCut) enum 원문(중국어)이며, 실제 앱에서
-# 동일한 이름의 효과에 매핑됩니다.
+# 멤버명은 pyCapCut enum(CapCut 글로벌 영어 효과명)이며, 실제 CapCut 앱의
+# 동일 효과에 매핑됩니다.
 
 PRESETS: Dict[str, StylePreset] = {
     # 소름돋는: 줌 펀치 + 드롭에 섬광/글리치. 강렬한 리듬 영상용 기본값.
     "goosebump": StylePreset(
         name="goosebump",
         description="소름돋는 스타일 — 비트마다 줌/블러 펀치, 드롭엔 섬광·글리치",
-        transitions=["推近", "拉远", "快速缩放", "抖动放大", "模糊放大", "滑动放大"],
-        strong_transitions=["闪白", "爆闪", "故障", "信号故障", "惊悚屏闪", "白光快闪"],
-        bg_intro="动感放大",
-        bg_strong_intro="抖动变焦",
-        text_intro="弹入",
-        text_strong_intro="放大震动",
-        scene_effect="CCD闪光",
+        transitions=["Snap_Zoom", "Zoom_Transition", "Zoom_to_Change", "Flip_Zoom",
+                     "Push_Away_2", "Zoom_Shake_2"],
+        strong_transitions=["White_Flash", "Flash", "Signal_Glitch_2", "Subject_Flash",
+                            "Lumin_Flash", "TV_Flickers"],
+        bg_intro="Focus",
+        bg_strong_intro="Skew_Shake",
+        text_intro="Click",
+        text_strong_intro="Bumper_Car",
+        scene_effect="CCD",
         transition_duration=0.4,
         strong_transition_duration=0.18,  # 드롭 섬광은 짧고 강하게 → 비트에 타이트
         text_size=9.0,
@@ -98,13 +100,14 @@ PRESETS: Dict[str, StylePreset] = {
     "energetic": StylePreset(
         name="energetic",
         description="강렬한 스타일 — 빠른 컷과 셰이크, 리듬감 극대화",
-        transitions=["快速缩放", "抖动放大", "抖动缩小", "运镜压缩", "震动缩小"],
-        strong_transitions=["爆闪", "频闪", "快速震闪", "色差故障", "X形震闪"],
-        bg_intro="动感放大",
-        bg_strong_intro="震波",
-        text_intro="随机弹跳",
-        text_strong_intro="放大震动",
-        scene_effect="心跳",
+        transitions=["Snap_Zoom", "Zoom_Shake_2", "Bump", "Jerky_Camera", "Shake_down"],
+        strong_transitions=["Flash", "White_Flash", "Subject_Flash", "Signal_Glitch_2",
+                            "Dazzle_Pulse"],
+        bg_intro="Skew_Shake",
+        bg_strong_intro="Crisscross_Shake",
+        text_intro="Bumper_Car",
+        text_strong_intro="Click",
+        scene_effect="Camera_Beats",
         transition_duration=0.33,
         strong_transition_duration=0.15,  # 가장 짧은 컷 타격
         text_size=9.0,
@@ -114,13 +117,13 @@ PRESETS: Dict[str, StylePreset] = {
     "dreamy": StylePreset(
         name="dreamy",
         description="잔잔한 스타일 — 부드러운 디졸브와 은은한 줌, 감성 발라드용",
-        transitions=["叠化", "溶解推进", "模糊放大", "滑动放大"],
-        strong_transitions=["泛光", "星光叠化", "复古漏光", "炫光"],
-        bg_intro="轻微放大",
-        bg_strong_intro="放大",
-        text_intro="渐显",
-        text_strong_intro="波浪弹入",
-        scene_effect="光晕",
+        transitions=["Dreamy_Bubbles", "Light_Leaks", "Elastic_Glowing", "Fold_Over"],
+        strong_transitions=["Lumin_Flash", "Hot_Shimmers", "Film_Burn", "Light_Leaks"],
+        bg_intro="Focus",
+        bg_strong_intro="Chroma_Wave",
+        text_intro="Golden_Dust",
+        text_strong_intro="Wiping_In",
+        scene_effect="Dreamy_Halo",
         transition_duration=0.6,
         strong_transition_duration=0.45,  # 감성 유지 위해 비교적 길게
         text_size=8.0,
@@ -130,12 +133,12 @@ PRESETS: Dict[str, StylePreset] = {
     "retro": StylePreset(
         name="retro",
         description="레트로 스타일 — 필름 감성과 글리치, VHS 무드",
-        transitions=["复古放映", "胶片切闪", "复古漏光", "拉远"],
-        strong_transitions=["电视故障_I", "信号故障", "雪花故障", "色块故障"],
-        bg_intro="轻微抖动",
-        bg_strong_intro="抖动变焦",
-        text_intro="复古打字机",
-        text_strong_intro="故障打字机",
+        transitions=["Film_Burn", "Dirty_Frame", "Light_Leaks", "TV_Flickers"],
+        strong_transitions=["TV_Flickers", "Signal_Glitch_2", "Dirty_Frame", "Film_Burn"],
+        bg_intro="TV_On",
+        bg_strong_intro="Skew_Shake",
+        text_intro="Slanted_Expand",
+        text_strong_intro="Golden_Dust",
         scene_effect="VCR",
         transition_duration=0.5,
         strong_transition_duration=0.22,

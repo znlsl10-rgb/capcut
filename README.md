@@ -12,7 +12,7 @@
 만들어진 초안을 캡컷에서 열어 확인한 뒤 **내보내기(export)** 만 하면 끝입니다.
 
 > 캡컷은 공식 편집 API가 없어, 자동 편집은 **초안 프로젝트 파일을 직접 생성**하는
-> 방식으로 동작합니다. draft 생성은 오픈소스 [`pyJianYingDraft`](https://pypi.org/project/pyJianYingDraft/) 를 사용합니다.
+> 방식으로 동작합니다. draft 생성은 오픈소스 [`pyCapCut`](https://pypi.org/project/pyCapCut/) 를 사용합니다.
 
 ---
 
@@ -46,7 +46,7 @@ python -m pip install -r requirements.txt
 추가로 필요한 것:
 
 - **ffmpeg** — Whisper/librosa 오디오 디코딩용. (`brew install ffmpeg` / `apt install ffmpeg` / [윈도우 빌드](https://www.gyan.dev/ffmpeg/builds/))
-- **MediaInfo** — pyJianYingDraft 가 소재 길이/해상도를 읽는 데 사용. 대부분 `pymediainfo` 설치 시 함께 동작하지만, 안 되면 [MediaInfo](https://mediaarea.net/en/MediaInfo) 를 설치하세요.
+- **MediaInfo** — pyCapCut 이 소재 길이/해상도를 읽는 데 사용. 대부분 `pymediainfo` 설치 시 함께 동작하지만, 안 되면 [MediaInfo](https://mediaarea.net/en/MediaInfo) 를 설치하세요.
 
 > GPU가 있으면 `capcut_agent/lyrics.py` 의 `device="auto"` 가 자동으로 CUDA를 사용해 받아쓰기가 훨씬 빨라집니다.
 
@@ -144,7 +144,7 @@ python -m capcut_agent styles
 실행 후 캡컷을 (재)시작하면 **초안 목록**에 생성된 프로젝트가 나타납니다.
 
 > 캡컷 버전에 따라 초안 포맷이 다를 수 있습니다. 잘 열리는 캡컷 버전은
-> `pyJianYingDraft` 문서를 참고하세요. 초안을 열 때 캡컷은 자동으로 최신
+> `pyCapCut` 문서를 참고하세요. 초안을 열 때 캡컷은 자동으로 최신
 > 포맷으로 변환합니다.
 
 ---
@@ -169,7 +169,7 @@ python -m capcut_agent styles
                 └───────┬───────────┘
                         │
               ┌─────────▼───────────┐
-              │ draft_builder.py    │  pyJianYingDraft:
+              │ draft_builder.py    │  pyCapCut:
               │  → draft_content.json│  배경컷+전환+자막+오디오 트랙 생성
               └─────────────────────┘
 ```
@@ -190,8 +190,9 @@ python -m capcut_agent styles
 ## 🎨 스타일 커스터마이징
 
 `capcut_agent/transitions.py` 의 `PRESETS` 에서 전환/애니 목록, 자막 색/크기,
-전환 길이를 바꿀 수 있습니다. 전환·효과 이름은 캡컷 내 효과명(중국어 원문)과
-동일합니다. 새 프리셋을 추가하면 `--style <이름>` 으로 바로 사용됩니다.
+전환 길이를 바꿀 수 있습니다. 전환·효과 이름은 pyCapCut 의 enum 멤버명
+(CapCut 글로벌 영어 효과명, 예: `Snap_Zoom`, `White_Flash`)과 동일합니다.
+새 프리셋을 추가하면 `--style <이름>` 으로 바로 사용됩니다.
 
 ---
 
@@ -201,7 +202,7 @@ python -m capcut_agent styles
 python -m pytest -q
 ```
 
-순수 로직 테스트는 librosa/whisper/pyJianYingDraft 없이 실행됩니다.
+순수 로직 테스트는 librosa/whisper/pyCapCut 없이 실행됩니다.
 
 ---
 

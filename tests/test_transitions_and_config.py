@@ -1,4 +1,4 @@
-"""transitions/config/draft_builder 순수 로직 테스트 (pyJianYingDraft 불필요)."""
+"""transitions/config/draft_builder 순수 로직 테스트 (pyCapCut 불필요)."""
 
 import pytest
 

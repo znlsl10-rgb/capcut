@@ -3,9 +3,9 @@
 # 무거운 의존성(오디오 분석/받아쓰기/드래프트 생성)은 실제 편집 실행 시에만 필요합니다.
 # 순수 로직 유닛 테스트는 아래 패키지 없이도 동작합니다.
 
-# 캡컷/剪映 draft(초안) 프로젝트 파일 생성
-pyJianYingDraft>=0.3.0
-pymediainfo>=6.1.0        # pyJianYingDraft가 소재 길이/해상도 추출에 사용
+# 캡컷(CapCut) draft(초안) 프로젝트 파일 생성
+pyCapCut>=0.0.3
+pymediainfo>=6.1.0        # pyCapCut이 소재 길이/해상도 추출에 사용
 
 # 오디오 비트/드롭 분석
 librosa>=0.10.0

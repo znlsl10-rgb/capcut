@@ -8,7 +8,7 @@
                               ├→ 캡컷 draft 빌더 → draft_content.json
     오디오 → (Whisper 가사)  ┘
 
-무거운 의존성(librosa / whisper / pyJianYingDraft)은 실제 실행 시에만
+무거운 의존성(librosa / whisper / pyCapCut)은 실제 실행 시에만
 지연 임포트합니다. 순수 로직(비트 선정, SRT 생성, 프리셋)은 의존성 없이
 동작하도록 분리되어 있습니다.
 """

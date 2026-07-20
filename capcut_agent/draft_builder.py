@@ -1,7 +1,7 @@
 """캡컷(CapCut / 剪映) 초안 빌더.
 
 분석 결과(BeatMap) + 가사(LyricSegment) + 스타일 프리셋을 받아
-pyJianYingDraft 로 실제 초안 프로젝트를 생성합니다.
+pyCapCut 으로 실제 초안 프로젝트를 생성합니다.
 
 트랙 구성(아래→위):
     1) 배경 영상 트랙  : 비트 지점에서 컷 + 전환 + 줌 애니 (소름돋는 화면 전환)
@@ -166,8 +166,8 @@ def build_draft(
     """
     import os
 
-    import pyJianYingDraft as draft
-    from pyJianYingDraft import (
+    import pycapcut as draft
+    from pycapcut import (
         AudioMaterial,
         AudioSegment,
         ClipSettings,
@@ -177,7 +177,6 @@ def build_draft(
         TextSegment,
         TextStyle,
         Timerange,
-        TrackSpec,
         TrackType,
         TransitionType,
         VideoMaterial,
@@ -194,9 +193,9 @@ def build_draft(
     )
 
     # 트랙 생성 (아래→위 순서로 쌓임)
-    script.append_track(TrackSpec(TrackType.video, "background"))
-    script.append_track(TrackSpec(TrackType.audio, "song"))
-    script.append_track(TrackSpec(TrackType.text, "lyrics"))
+    script.add_track(TrackType.video, "background")
+    script.add_track(TrackType.audio, "song")
+    script.add_track(TrackType.text, "lyrics")
 
     # --- 배경 트랙: 여러 클립을 비트에 맞춰 컷 + 전환 + 줌 애니 -----------
     lyrics_for_plan = clamp_segments_to_duration(lyric_segments, beatmap.duration)
