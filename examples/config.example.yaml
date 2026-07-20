@@ -1,0 +1,34 @@
+# CapCut Auto-Edit Agent 설정 예시
+# 복사해서 config.yaml 로 저장한 뒤 경로만 자기 환경에 맞게 바꾸세요.
+
+# --- 입력 ---
+audio_path: "media/song.mp3"        # 노래 오디오 (mp3/wav/m4a)
+background_path: "media/bg.mp4"     # 배경 영상 또는 이미지(jpg/png)
+
+# --- 캡컷 초안 저장 위치 ---
+# 캡컷 데스크톱이 초안을 저장하는 폴더를 지정하세요.
+#   Windows : C:/Users/<이름>/AppData/Local/CapCut/User Data/Projects/com.lveditor.draft
+#   macOS   : ~/Movies/CapCut/User Data/Projects/com.lveditor.draft
+#   (중국판 剪映는 JianyingPro 경로)
+draft_folder: "C:/Users/me/AppData/Local/CapCut/User Data/Projects/com.lveditor.draft"
+draft_name: "auto_lyric_video"
+
+# --- 출력 해상도 (세로 숏폼 기본) ---
+width: 1080
+height: 1920
+fps: 30
+
+# --- 스타일 ---
+# goosebump(소름) / energetic(강렬) / dreamy(잔잔) / retro(레트로)
+style: "goosebump"
+
+# --- 가사 받아쓰기 (Whisper) ---
+language: "ko"           # ko/en/ja/... 미지정(null)이면 자동 감지
+whisper_model: "small"   # tiny/base/small/medium/large-v3 (클수록 정확·느림)
+# lyrics_srt: "lyrics.srt"   # 이미 만든 SRT 가 있으면 지정 → 받아쓰기 생략
+# output_srt: "lyrics.srt"   # 받아쓴 가사를 저장할 경로
+
+# --- 화면 전환 세부 ---
+min_transition_gap: 0.45   # 전환 사이 최소 간격(초) — 너무 잦은 컷 방지
+beat_subdivision: 1        # 1=매 비트, 2=한 박 걸러
+max_transitions: 0         # 최대 전환 수 상한(0=무제한)
