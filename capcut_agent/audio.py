@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Sequence
+from typing import List, Sequence, Tuple
 
 
 @dataclass
@@ -54,14 +54,19 @@ def select_transition_points(
     subdivision: int = 1,
     max_count: int = 0,
     strong_percentile: float = 0.7,
+    emphasis_windows: Sequence[Tuple[float, float]] = (),
 ) -> List[TransitionPoint]:
     """비트 정보로부터 화면 전환 지점을 선정합니다 (순수 함수).
 
     규칙:
       - `subdivision` 개 비트마다 하나씩 후보로 사용(1=매 비트).
       - 직전 채택 지점과 `min_gap`(초) 미만이면 건너뜀(과도한 컷 방지).
-      - downbeat 이거나 세기가 상위 `strong_percentile` 이면 strong=True.
+      - downbeat 이거나 세기가 상위 `strong_percentile` 이거나
+        `emphasis_windows`(예: 가사 구간) 안이면 strong=True.
       - `max_count` > 0 이면 세기 우선으로 상한을 적용.
+
+    전환 지점은 항상 감지된 비트 시각 그 자체이므로, 캡컷에서 이 지점에
+    배치된 전환은 박자에 정확히 맞습니다("박자에 딱").
 
     Args:
         beatmap: 분석 결과.
@@ -69,6 +74,7 @@ def select_transition_points(
         subdivision: 비트 추출 간격(1=매 비트, 2=한 박 걸러 등).
         max_count: 최대 전환 수(0=무제한).
         strong_percentile: strong 판정 세기 분위수(0~1).
+        emphasis_windows: 강조할 (시작,끝) 구간들. 이 안의 비트는 강박 처리.
 
     Returns:
         시간순으로 정렬된 TransitionPoint 목록.
@@ -93,7 +99,11 @@ def select_transition_points(
             continue
         if t - last_time < min_gap:
             continue
-        is_strong = round(t, 3) in downbeat_set or strengths[i] >= threshold
+        is_strong = (
+            round(t, 3) in downbeat_set
+            or strengths[i] > threshold
+            or _in_windows(t, emphasis_windows)
+        )
         selected.append(TransitionPoint(time=round(t, 3), strong=is_strong))
         last_time = t
 
@@ -122,6 +132,14 @@ def segment_boundaries(points: Sequence[TransitionPoint], duration: float) -> Li
     if not bounds or bounds[-1] < duration:
         bounds.append(round(duration, 3))
     return bounds
+
+
+def _in_windows(t: float, windows: Sequence[Tuple[float, float]]) -> bool:
+    """시각 t 가 (시작,끝) 구간들 중 하나에 포함되는지."""
+    for start, end in windows:
+        if start <= t <= end:
+            return True
+    return False
 
 
 def _percentile(values: Sequence[float], q: float) -> float:

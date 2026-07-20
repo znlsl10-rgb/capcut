@@ -36,18 +36,29 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
     if args.config:
         config = load_config(args.config)
     else:
-        required = {"audio_path": args.audio, "background_path": args.background, "draft_folder": args.draft_folder}
-        missing = [k for k, v in required.items() if not v]
-        if missing:
-            raise SystemExit(
-                "--config 없이 실행하려면 --audio, --background, --draft-folder 가 모두 필요합니다."
-            )
-        config = from_dict({k: v for k, v in required.items()})
+        if not args.audio or not args.draft_folder:
+            raise SystemExit("--config 없이 실행하려면 최소한 --audio 와 --draft-folder 가 필요합니다.")
+        if not (args.background or args.background_dir):
+            raise SystemExit("배경 소재가 필요합니다: --background <파일...> 또는 --background-dir <폴더>")
+        data = {"audio_path": args.audio, "draft_folder": args.draft_folder}
+        if args.background:
+            data["background_paths"] = list(args.background)
+        if args.background_dir:
+            data["background_dir"] = args.background_dir
+        config = from_dict(data)
 
-    # CLI 인자가 있으면 설정 파일 값을 덮어씀.
+    # CLI 배경 인자가 있으면 설정 파일 값을 덮어씀.
+    if args.background:
+        config.background_paths = list(args.background)
+        config.background_path = None
+    if args.background_dir:
+        config.background_dir = args.background_dir
+
+    # 그 외 스칼라 오버라이드.
     overrides = {
         "draft_name": args.name,
         "style": args.style,
+        "clip_order": args.clip_order,
         "language": args.language,
         "whisper_model": args.whisper_model,
         "lyrics_srt": args.lyrics_srt,
@@ -160,7 +171,18 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="편집 실행(초안 생성)")
     run.add_argument("--config", help="YAML 설정 파일 경로")
     run.add_argument("--audio", help="노래 오디오 파일")
-    run.add_argument("--background", help="배경 영상/이미지 파일")
+    run.add_argument(
+        "--background",
+        nargs="+",
+        help="배경 영상/이미지 파일(여러 개 지정 가능). 비트에 맞춰 순환 배치됨",
+    )
+    run.add_argument("--background-dir", dest="background_dir", help="배경 클립들이 담긴 폴더")
+    run.add_argument(
+        "--clip-order",
+        dest="clip_order",
+        choices=["sequential", "shuffle"],
+        help="클립 배치 순서 (sequential=순환, shuffle=무작위)",
+    )
     run.add_argument("--draft-folder", dest="draft_folder", help="캡컷 초안 루트 폴더")
     run.add_argument("--name", help="초안(프로젝트) 이름")
     run.add_argument("--style", help=f"스타일 프리셋 ({', '.join(list_presets())})")

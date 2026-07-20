@@ -28,7 +28,9 @@ class StylePreset:
         text_intro: 자막 입장 애니(TextIntro 멤버명).
         text_strong_intro: 강박 구간 자막 입장 애니. None 가능.
         scene_effect: 드롭에 얹는 화면 효과(VideoSceneEffectType 멤버명). None 가능.
-        transition_duration: 전환 길이(초).
+        transition_duration: 일반 전환 길이(초).
+        strong_transition_duration: 드롭/강박 전환 길이(초). 짧게 두면 컷이
+            비트에 더 타이트하게 꽂혀 타격감이 커집니다.
         text_size: 자막 글자 크기(캡컷 상대 단위, 기본 5).
         text_color: 자막 색(#RRGGBB).
     """
@@ -43,8 +45,13 @@ class StylePreset:
     text_strong_intro: Optional[str] = None
     scene_effect: Optional[str] = None
     transition_duration: float = 0.5
+    strong_transition_duration: float = 0.2
     text_size: float = 8.0
     text_color: str = "#FFFFFF"
+
+    def transition_duration_for(self, strong: bool) -> float:
+        """강박 여부에 따른 전환 길이(초)."""
+        return self.strong_transition_duration if strong else self.transition_duration
 
     def pick_transition(self, index: int, strong: bool) -> Optional[str]:
         """index 번째 전환 이름을 고릅니다(순환). strong 이면 강렬 전환군 사용."""
@@ -83,6 +90,7 @@ PRESETS: Dict[str, StylePreset] = {
         text_strong_intro="放大震动",
         scene_effect="CCD闪光",
         transition_duration=0.4,
+        strong_transition_duration=0.18,  # 드롭 섬광은 짧고 강하게 → 비트에 타이트
         text_size=9.0,
         text_color="#FFFFFF",
     ),
@@ -98,6 +106,7 @@ PRESETS: Dict[str, StylePreset] = {
         text_strong_intro="放大震动",
         scene_effect="心跳",
         transition_duration=0.33,
+        strong_transition_duration=0.15,  # 가장 짧은 컷 타격
         text_size=9.0,
         text_color="#FFFFFF",
     ),
@@ -113,6 +122,7 @@ PRESETS: Dict[str, StylePreset] = {
         text_strong_intro="波浪弹入",
         scene_effect="光晕",
         transition_duration=0.6,
+        strong_transition_duration=0.45,  # 감성 유지 위해 비교적 길게
         text_size=8.0,
         text_color="#FFFFFF",
     ),
@@ -128,6 +138,7 @@ PRESETS: Dict[str, StylePreset] = {
         text_strong_intro="故障打字机",
         scene_effect="VCR",
         transition_duration=0.5,
+        strong_transition_duration=0.22,
         text_size=8.0,
         text_color="#FFE9A8",
     ),

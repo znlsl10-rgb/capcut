@@ -39,13 +39,68 @@ def _hex_to_rgb(color: str) -> Tuple[float, float, float]:
     return (r, g, b)
 
 
-def _plan_points(config: AgentConfig, beatmap: BeatMap) -> List[TransitionPoint]:
+def _plan_points(
+    config: AgentConfig,
+    beatmap: BeatMap,
+    lyric_segments: Sequence[LyricSegment] = (),
+) -> List[TransitionPoint]:
+    windows: List[Tuple[float, float]] = []
+    if config.emphasize_lyrics and lyric_segments:
+        windows = [(s.start, s.end) for s in lyric_segments]
     return select_transition_points(
         beatmap,
         min_gap=config.min_transition_gap,
         subdivision=config.beat_subdivision,
         max_count=config.max_transitions,
+        emphasis_windows=windows,
     )
+
+
+def assign_clips(
+    num_segments: int,
+    num_clips: int,
+    order: str = "sequential",
+    seed: int = 0,
+) -> List[int]:
+    """각 배경 컷(세그먼트)에 사용할 클립 인덱스를 정합니다 (순수 함수).
+
+    - "sequential": 0,1,2,...,0,1,2,... 순환. 컷마다 다음 클립이 나와
+      비트에 맞춰 화면이 계속 바뀌는 몽타주가 됩니다.
+    - "shuffle": 무작위이되 같은 클립이 연속되지 않도록 하고, 모든 클립을
+      한 바퀴 다 쓴 뒤 다시 섞습니다(균등 사용).
+
+    Args:
+        num_segments: 배경 컷 개수.
+        num_clips: 사용할 클립 개수.
+        order: "sequential" 또는 "shuffle".
+        seed: shuffle 재현용 시드.
+
+    Returns:
+        길이 num_segments 인 클립 인덱스 리스트.
+    """
+    if num_clips <= 0 or num_segments <= 0:
+        return []
+    if num_clips == 1:
+        return [0] * num_segments
+    if order == "shuffle":
+        import random
+
+        rnd = random.Random(seed)
+        result: List[int] = []
+        bag: List[int] = []
+        prev = -1
+        for _ in range(num_segments):
+            if not bag:
+                bag = list(range(num_clips))
+                rnd.shuffle(bag)
+                if bag[0] == prev:  # 바구니 경계에서 연속 방지
+                    bag.append(bag.pop(0))
+            choice = bag.pop(0)
+            result.append(choice)
+            prev = choice
+        return result
+    # sequential
+    return [i % num_clips for i in range(num_segments)]
 
 
 def plan_summary(
@@ -57,15 +112,18 @@ def plan_summary(
 ) -> str:
     """편집 계획 요약(사람이 읽는 텍스트). 라이브러리 불필요."""
     preset = preset or get_preset(config.style)
-    points = _plan_points(config, beatmap)
-    strong = sum(1 for p in points if p.strong)
     lyrics = clamp_segments_to_duration(lyric_segments, beatmap.duration)
+    points = _plan_points(config, beatmap, lyrics)
+    strong = sum(1 for p in points if p.strong)
+    clips = config.resolved_backgrounds()
 
     lines = [
         f"🎬 편집 계획 — 프리셋 '{preset.name}' ({preset.description})",
         f"   길이 {beatmap.duration:.1f}s · 템포 ~{beatmap.tempo:.0f} BPM",
+        f"   배경 클립 {len(clips)}개 · 배치 '{config.clip_order}'",
         f"   화면 전환 {len(points)}회 (강렬/드롭 {strong}회), 배경 컷 {len(points) + 1}개",
-        f"   가사 자막 {len(lyrics)}줄",
+        f"   가사 자막 {len(lyrics)}줄"
+        + ("  · 가사 구간 박자 강조 ON" if config.emphasize_lyrics else ""),
         f"   일반 전환: {', '.join(preset.transitions)}",
         f"   드롭 전환: {', '.join(preset.strong_transitions)}",
     ]
@@ -140,22 +198,42 @@ def build_draft(
     script.append_track(TrackSpec(TrackType.audio, "song"))
     script.append_track(TrackSpec(TrackType.text, "lyrics"))
 
-    # --- 배경 트랙: 비트 컷 + 전환 + 줌 애니 -------------------------------
-    bg_mat = VideoMaterial(config.background_path)
-    is_photo = getattr(bg_mat, "material_type", "video") == "photo"
-
-    points = _plan_points(config, beatmap)
+    # --- 배경 트랙: 여러 클립을 비트에 맞춰 컷 + 전환 + 줌 애니 -----------
+    lyrics_for_plan = clamp_segments_to_duration(lyric_segments, beatmap.duration)
+    points = _plan_points(config, beatmap, lyrics_for_plan)
     bounds = segment_boundaries(points, beatmap.duration)
     strong_at = {round(p.time, 3): p.strong for p in points}
 
-    for idx in range(len(bounds) - 1):
+    # 배경 클립 소재 로드(읽기 실패한 파일은 경고 후 제외).
+    materials: List = []
+    is_photo: List[bool] = []
+    for path in config.resolved_backgrounds():
+        try:
+            mat = VideoMaterial(path)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"배경 클립 로드 실패, 건너뜀: {path} ({exc})")
+            continue
+        materials.append(mat)
+        is_photo.append(getattr(mat, "material_type", "video") == "photo")
+    if not materials:
+        raise ValueError("사용 가능한 배경 클립이 없습니다.")
+
+    num_segments = len(bounds) - 1
+    assignment = assign_clips(num_segments, len(materials), config.clip_order, config.clip_seed)
+    cursors = [0] * len(materials)  # 클립별 재생 헤드(연속 사용 시 다른 부분 노출)
+
+    for idx in range(num_segments):
         start_s, end_s = bounds[idx], bounds[idx + 1]
         seg_dur_us = _us(end_s - start_s)
         if seg_dur_us <= 0:
             continue
+
+        clip_idx = assignment[idx]
+        mat = materials[clip_idx]
         target = Timerange(_us(start_s), seg_dur_us)
-        source = _source_window(Timerange, bg_mat, seg_dur_us, target.start, is_photo)
-        seg = VideoSegment(bg_mat, target, source_timerange=source)
+        source = _source_window(Timerange, mat, seg_dur_us, cursors[clip_idx], is_photo[clip_idx])
+        cursors[clip_idx] += seg_dur_us  # 다음에 이 클립을 쓰면 이어지는 부분 사용
+        seg = VideoSegment(mat, target, source_timerange=source)
 
         # 세로/가로 비율이 다를 때 배경을 블러로 채워 빈 곳을 없앰.
         try:
@@ -171,8 +249,9 @@ def build_draft(
             if member is not None:
                 seg.add_animation(member)
 
-        # 다음 세그먼트로의 전환 (마지막 세그먼트 제외)
-        is_last = idx == len(bounds) - 2
+        # 다음 세그먼트로의 전환 (마지막 세그먼트 제외). 컷 지점 = 비트 시각이므로
+        # 전환은 박자에 정확히 맞습니다. 인접 두 컷 길이로 전환 길이를 제한.
+        is_last = idx == num_segments - 1
         if not is_last:
             boundary_time = round(end_s, 3)
             t_strong = strong_at.get(boundary_time, False)
@@ -180,9 +259,12 @@ def build_draft(
             if t_name:
                 member = _resolve(TransitionType, t_name, warnings)
                 if member is not None:
-                    dur = min(preset.transition_duration, 0.8 * (end_s - start_s))
-                    seg.add_transition(member, duration=_us(dur))
-            # 드롭 구간엔 화면 효과(섬광 등)로 소름 포인트 강조.
+                    next_dur = bounds[idx + 2] - bounds[idx + 1]
+                    cap = 0.9 * min(end_s - start_s, next_dur)
+                    dur = min(preset.transition_duration_for(t_strong), cap)
+                    if dur > 0.01:
+                        seg.add_transition(member, duration=_us(dur))
+            # 드롭/가사강조 구간엔 화면 효과(섬광 등)로 소름 포인트 강조.
             if t_strong and preset.scene_effect:
                 member = _resolve(VideoSceneEffectType, preset.scene_effect, warnings)
                 if member is not None:

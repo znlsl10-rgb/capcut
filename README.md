@@ -18,10 +18,15 @@
 
 ## ✨ 특징
 
+- **여러 클립 비트 배치** — 배경 클립 여러 개를 넣으면 **비트마다 다른 클립**으로
+  전환되는 몽타주 생성(`sequential` 순환 / `shuffle` 무작위). 컷은 항상 감지된
+  비트 시각에 놓여 **박자에 정확히** 맞습니다.
+- **가사 구간 박자 강조** — 가사가 나오는 구간의 비트를 강박으로 승격해, 그
+  "소름 포인트"에서 **더 강렬한 전환(섬광·글리치)을 짧고 타이트하게** 꽂습니다.
 - **비트 동기 전환** — librosa 로 비트/온셋/타악 에너지를 분석, 드롭 구간은 더 강렬한 전환.
 - **가사 자동 자막** — faster-whisper(또는 openai-whisper) 받아쓰기 → 자막 트랙 + 입장 애니.
 - **스타일 프리셋** — `goosebump`(소름) · `energetic`(강렬) · `dreamy`(잔잔) · `retro`(레트로).
-- **영상/이미지 모두 지원** — 배경이 짧으면 자동 루프, 세로 비율은 블러 배경으로 채움.
+- **영상/이미지 모두 지원** — 클립이 짧으면 자동 루프, 세로 비율은 블러 배경으로 채움.
 - **드라이런** — 무거운 초안 생성 없이 편집 계획만 미리보기.
 
 ---
@@ -56,13 +61,20 @@ python -m capcut_agent run --config config.yaml
 ### 2) 인자로 바로 실행
 
 ```bash
+# 여러 배경 클립을 비트에 맞춰 순환 배치
 python -m capcut_agent run \
   --audio song.mp3 \
-  --background bg.mp4 \
+  --background clip01.mp4 clip02.mp4 clip03.mp4 clip04.jpg \
+  --clip-order shuffle \
   --draft-folder "~/Movies/CapCut/User Data/Projects/com.lveditor.draft" \
   --name my_lyric_video \
   --style goosebump \
   --language ko
+
+# 폴더째로 넣기 (안의 영상/이미지를 이름순으로 모두 사용)
+python -m capcut_agent run \
+  --audio song.mp3 --background-dir ./clips \
+  --draft-folder "~/Movies/CapCut/User Data/Projects/com.lveditor.draft"
 ```
 
 ### 3) 계획만 미리보기 (초안 생성 X)
@@ -122,8 +134,11 @@ python -m capcut_agent styles
               └─────────────────────┘
 ```
 
-- **배경 트랙**: 전환 지점마다 배경을 컷으로 나누고, 각 컷에 줌 입장 애니와
-  다음 컷으로의 전환을 붙입니다. 드롭 구간은 강렬한 전환 + 화면 효과로 강조.
+- **배경 트랙**: 비트 지점마다 컷을 나누고 **여러 클립을 순환/무작위로 배치**해
+  컷마다 화면이 바뀌게 합니다. 각 컷엔 줌 입장 애니 + 다음 컷 전환을 붙입니다.
+  컷 지점 = 비트 시각이므로 전환이 **박자에 정확히** 맞고, 가사·드롭 구간은
+  더 짧고 강렬한 전환(섬광·글리치)으로 타격감을 줍니다.
+  같은 클립을 다시 쓸 땐 재생 헤드를 앞으로 밀어 **다른 부분**을 보여줍니다.
 - **자막 트랙**: 가사 세그먼트마다 텍스트 + 입장 애니(팝/타자기 등).
 - **오디오 트랙**: 노래 원본.
 

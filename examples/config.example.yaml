@@ -3,7 +3,20 @@
 
 # --- 입력 ---
 audio_path: "media/song.mp3"        # 노래 오디오 (mp3/wav/m4a)
-background_path: "media/bg.mp4"     # 배경 영상 또는 이미지(jpg/png)
+
+# 배경 소재: 아래 세 가지 중 하나 이상. 여러 클립을 넣으면 비트에 맞춰
+# 컷마다 다른 클립이 나오는 몽타주가 됩니다(소름 포인트).
+#   background_path : 단일 파일
+#   background_paths: 여러 파일 목록
+#   background_dir  : 폴더(안의 영상/이미지를 이름순으로 모두 사용)
+background_paths:
+  - "media/clip01.mp4"
+  - "media/clip02.mp4"
+  - "media/clip03.mp4"
+  - "media/clip04.jpg"
+# background_dir: "media/clips"     # 폴더째로 넣고 싶을 때
+clip_order: "sequential"            # sequential(순환) | shuffle(무작위)
+clip_seed: 0                        # shuffle 재현용 시드
 
 # --- 캡컷 초안 저장 위치 ---
 # 캡컷 데스크톱이 초안을 저장하는 폴더를 지정하세요.
@@ -32,3 +45,5 @@ whisper_model: "small"   # tiny/base/small/medium/large-v3 (클수록 정확·�
 min_transition_gap: 0.45   # 전환 사이 최소 간격(초) — 너무 잦은 컷 방지
 beat_subdivision: 1        # 1=매 비트, 2=한 박 걸러
 max_transitions: 0         # 최대 전환 수 상한(0=무제한)
+emphasize_lyrics: true     # 가사 나오는 구간의 비트를 강박으로 승격
+                           # → 그 구간 화면 전환을 강렬하게 + 박자에 정확히
