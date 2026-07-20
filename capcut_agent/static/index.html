@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>캡컷 에이전트 — 성공 동기부여 뮤직비디오</title>
+<style>
+  :root{
+    --bg:#0A0E1A; --panel:#141A2B; --panel2:#1B2338; --line:#28324B;
+    --tx:#E9EDF6; --muted:#8B97B0; --accent:#5B8CFF; --accent2:#3E6BE0; --gold:#FFD98A;
+    --ok:#5B8CFF; --err:#F26D6D;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(900px 500px at 78% -12%,#16305e 0%,var(--bg) 55%);
+    color:var(--tx);font-family:var(--font);line-height:1.55}
+  .wrap{max-width:740px;margin:0 auto;padding:38px 22px 60px}
+  .eyebrow{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-size:clamp(25px,4.6vw,36px);font-weight:800;letter-spacing:-.02em;margin:.2em 0 .1em}
+  .sub{color:var(--muted);margin:0 0 24px;font-size:14.5px}
+  .row{display:grid;grid-template-columns:1fr;gap:14px}
+  .fieldlabel{font-size:12px;color:var(--muted);font-weight:600;margin-bottom:6px;letter-spacing:.03em}
+  select,.drop{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--tx)}
+  select{padding:12px 12px;font-size:15px;font-family:var(--font)}
+  .drop{border:2px dashed var(--line);padding:26px 18px;text-align:center;cursor:pointer;transition:.15s}
+  .drop.over{border-color:var(--accent);background:var(--panel2)}
+  .drop.has{border-style:solid;border-color:var(--accent2)}
+  .drop .big{font-weight:600;font-size:15px}
+  .drop .hint{color:var(--muted);font-size:12.5px;margin-top:5px}
+  input[type=file]{display:none}
+  .opts{display:flex;flex-wrap:wrap;gap:18px;margin:4px 2px}
+  .opt{display:flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted)}
+  .go{margin-top:6px;width:100%;border:0;border-radius:12px;padding:15px;font-size:15.5px;font-weight:800;
+    background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;cursor:pointer}
+  .go:disabled{opacity:.45;cursor:not-allowed}
+  .meta-chip{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);
+    border:1px solid var(--line);border-radius:999px;padding:3px 10px;margin-top:8px}
+  .steps{margin-top:24px;display:none;flex-direction:column;gap:2px}
+  .steps.on{display:flex}
+  .step{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:12px;background:var(--panel)}
+  .step+.step{margin-top:2px}
+  .dot{flex:0 0 auto;width:22px;height:22px;border-radius:50%;border:2px solid var(--line);
+    display:grid;place-items:center;font-size:12px;margin-top:1px;color:var(--muted)}
+  .step.run .dot{border-color:var(--accent);border-right-color:transparent;color:var(--accent);animation:spin 1s linear infinite}
+  .step.done .dot{border-color:var(--ok);background:var(--ok);color:#04102e}
+  .step.err .dot{border-color:var(--err);color:var(--err)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .step .name{font-weight:600;font-size:14.5px}
+  .step.pending .name{color:var(--muted)}
+  .step .meta{font-size:12.5px;color:var(--muted);margin-top:2px;font-family:var(--mono)}
+  .card{display:none;margin-top:22px;border-radius:16px;padding:20px;border:1px solid var(--accent2);
+    background:linear-gradient(180deg,var(--panel2),var(--panel))}
+  .card.on{display:block}.card.err{border-color:var(--err)}
+  .card h3{margin:0 0 12px;font-size:16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:10px;margin:6px 0 14px}
+  .kpi{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 11px}
+  .kpi .n{font-size:19px;font-weight:800;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:11px;color:var(--muted);margin-top:1px}
+  .path{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px;word-break:break-all;color:var(--muted)}
+  .verify{margin-top:14px;font-size:13.5px;background:rgba(91,140,255,.08);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;padding:11px 14px}
+  .foot{margin-top:28px;color:var(--muted);font-size:12px;text-align:center}
+  a{color:var(--accent)}
+  @media (prefers-color-scheme:light){
+    :root{--bg:#EEF1F9;--panel:#FFF;--panel2:#F2F5FC;--line:#D8DEEC;--tx:#0F1730;--muted:#5C6683;--accent:#345FE0;--accent2:#2A4FCB;--gold:#B4841E}
+    body{background:radial-gradient(900px 500px at 78% -12%,#d6e2fb 0%,var(--bg) 55%)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">캡컷 에이전트 · 성공 동기부여 뮤직비디오</div>
+  <h1>곡만 고르면, 뮤직비디오가 됩니다</h1>
+  <p class="sub">노래를 올리고 곡을 고르면 — <b>무드 배경 자동</b> · <b>비트에 맞춘 컷/전환</b> ·
+     <b>영어+한글 이중 자막</b>까지 얹어 캡컷 드래프트로. 결과는 캡컷에서 열어 재생·확인하세요.</p>
+
+  <div class="row">
+    <div>
+      <div class="fieldlabel">1 · 곡 선택 (정답 가사 · 무드 자동)</div>
+      <select id="song"><option value="">— 곡 목록 불러오는 중 —</option></select>
+      <div id="songMeta"></div>
+    </div>
+    <div>
+      <div class="fieldlabel">2 · 노래 파일 (mp3 / wav / m4a)</div>
+      <div id="drop" class="drop">
+        <div id="dropIdle"><div class="big">🎵 노래 파일을 끌어다 놓기</div>
+          <div class="hint">또는 클릭해서 선택 · 고른 곡의 음원</div></div>
+        <div id="dropFile" class="big" style="display:none"></div>
+      </div>
+      <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.m4a">
+    </div>
+  </div>
+
+  <div class="opts" style="margin-top:14px">
+    <label class="opt"><input type="checkbox" id="ko" checked> 한글 이중 자막(자동 번역)</label>
+    <label class="opt"><input type="checkbox" id="whisper" checked> Whisper 로 가사 타이밍 정밀</label>
+  </div>
+
+  <button id="go" class="go" disabled>뮤직비디오 만들기 →</button>
+
+  <div id="steps" class="steps"></div>
+
+  <div id="card" class="card">
+    <h3 id="cardTitle">✅ 뮤직비디오 드래프트 완성</h3>
+    <div class="grid" id="kpis"></div>
+    <div class="path" id="draftPath"></div>
+    <div class="verify" id="verify"></div>
+  </div>
+
+  <div class="foot">로컬에서만 동작 · 파일은 이 PC를 벗어나지 않습니다</div>
+</div>
+
+<script>
+const $=(id)=>document.getElementById(id);
+let file=null, songs=[];
+
+const STEPS=[
+  {key:"upload", name:"업로드"},
+  {key:"beat",   name:"비트·드롭 분석"},
+  {key:"lyrics", name:"가사 (영어 교정 + 한글)"},
+  {key:"background", name:"무드 배경 자동"},
+  {key:"draft",  name:"캡컷 드래프트 (컷+전환+자막)"},
+];
+
+// 곡 목록 로드
+fetch("/songs").then(r=>r.json()).then(d=>{
+  songs=d.songs||[];
+  const sel=$("song");
+  if(!songs.length){ sel.innerHTML='<option value="">(곡 목록 없음 — 서버에 --songbook 지정)</option>'; return; }
+  sel.innerHTML='<option value="">— 곡을 고르세요 —</option>'+
+    songs.map(s=>`<option value="${s.title}">${s.title} · ${s.mood}</option>`).join("");
+}).catch(()=>{ $("song").innerHTML='<option value="">(곡 목록 로드 실패)</option>'; });
+
+$("song").addEventListener("change", ()=>{
+  const s=songs.find(x=>x.title===$("song").value);
+  $("songMeta").innerHTML = s ?
+    `<span class="meta-chip">무드 ${s.mood}</span> <span class="meta-chip">스타일 ${s.style}</span> <span class="meta-chip">가사 ${s.lines}줄</span>` : "";
+  updateGo();
+});
+
+const drop=$("drop"), fi=$("fileInput");
+drop.addEventListener("click",()=>fi.click());
+["dragover","dragenter"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add("over")}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove("over")}));
+drop.addEventListener("drop",ev=>{ if(ev.dataTransfer.files[0]) setFile(ev.dataTransfer.files[0]); });
+fi.addEventListener("change",()=>{ if(fi.files[0]) setFile(fi.files[0]); });
+function setFile(f){
+  file=f;
+  $("dropIdle").style.display=f?"none":"block";
+  $("dropFile").style.display=f?"block":"none";
+  if(f) $("dropFile").textContent="🎵 "+f.name+"  ("+(f.size/1048576).toFixed(1)+" MB)";
+  drop.classList.toggle("has",!!f); updateGo();
+}
+function updateGo(){ $("go").disabled = !(file && $("song").value); }
+
+$("go").addEventListener("click", start);
+function renderSteps(){
+  const s=$("steps"); s.innerHTML=""; s.classList.add("on");
+  STEPS.forEach(st=>{
+    const el=document.createElement("div"); el.className="step pending"; el.id="st-"+st.key;
+    el.innerHTML=`<div class="dot">·</div><div><div class="name">${st.name}</div><div class="meta"></div></div>`;
+    s.appendChild(el);
+  });
+}
+function setStep(key,state,meta){
+  const el=$("st-"+key); if(!el) return;
+  el.className="step "+state;
+  el.querySelector(".dot").textContent = state==="done"?"✓":state==="err"?"!":state==="run"?"":"·";
+  if(meta!==undefined) el.querySelector(".meta").textContent=meta;
+}
+
+async function start(){
+  if(!file||!$("song").value) return;
+  $("go").disabled=true; $("card").classList.remove("on","err"); renderSteps();
+  setStep("upload","run","올리는 중…");
+  const fd=new FormData(); fd.append("file",file);
+  let job;
+  try{ const j=await (await fetch("/upload",{method:"POST",body:fd})).json();
+    if(j.error) throw new Error(j.error); job=j.job_id;
+  }catch(e){ setStep("upload","err","업로드 실패: "+e.message); $("go").disabled=false; return; }
+
+  const qs=new URLSearchParams({
+    song:$("song").value,
+    ko: $("ko").checked?"auto":"off",
+    timing: $("whisper").checked?"whisper":"distribute",
+  });
+  const es=new EventSource(`/events/${job}?${qs}`);
+  es.onmessage=(ev)=>{
+    const d=JSON.parse(ev.data);
+    if(d.step==="error"){ onError(d.message); es.close(); return; }
+    if(d.step==="done"){ finish(d.result); es.close(); return; }
+    apply(d);
+  };
+  es.onerror=()=>{ es.close(); $("go").disabled=false; };
+}
+function apply(d){
+  if(d.status==="running"){ setStep(d.step,"run","처리 중…"); return; }
+  if(d.status!=="done") return;
+  let m="완료"; const i=d.info||{};
+  if(d.step==="beat") m=`${i.duration}s · ~${i.tempo} BPM · 비트 ${i.beats}`;
+  else if(d.step==="lyrics") m=`${i.lines}줄 · 한글 ${i.ko} · 무드 ${i.mood} → ${i.style}`;
+  else if(d.step==="background") m=`배경 ${i.clips}컷 · ${i.guide}`;
+  else if(d.step==="upload") m=i;
+  setStep(d.step,"done",m);
+}
+function onError(msg){
+  const run=document.querySelector(".step.run"); if(run) setStep(run.id.replace("st-",""),"err",msg);
+  const c=$("card"); c.classList.add("on","err"); $("cardTitle").textContent="⚠️ 처리 중 문제";
+  $("kpis").innerHTML=""; $("draftPath").textContent=""; $("verify").textContent=msg; $("go").disabled=false;
+}
+function finish(r){
+  const c=$("card"); c.classList.add("on"); c.classList.remove("err");
+  $("cardTitle").textContent="✅ 완성 — "+r.song+" ("+r.mood+")";
+  $("kpis").innerHTML=`
+    <div class="kpi"><div class="n">${r.duration}s</div><div class="l">길이</div></div>
+    <div class="kpi"><div class="n">${r.tempo}</div><div class="l">BPM</div></div>
+    <div class="kpi"><div class="n">${r.clips}</div><div class="l">배경컷</div></div>
+    <div class="kpi"><div class="n">${r.lines}</div><div class="l">자막</div></div>
+    <div class="kpi"><div class="n">${r.ko}</div><div class="l">한글</div></div>`;
+  $("draftPath").textContent="📁 "+r.draft_path;
+  $("verify").innerHTML="👉 <b>캡컷을 (재)시작</b>해 초안 목록에서 열고 <b>재생</b>하세요. "+
+    "비트 전환·영한 자막이 다 얹혀 있습니다. 마지막 손질만 하면 끝.";
+  $("go").disabled=false;
+}
+</script>
+</body>
+</html>
