@@ -173,6 +173,7 @@ def build_draft(
         ClipSettings,
         DraftFolder,
         IntroType,
+        TextBorder,
         TextIntro,
         TextSegment,
         TextStyle,
@@ -279,32 +280,49 @@ def build_draft(
     song_us = min(_us(beatmap.duration), int(getattr(audio_mat, "duration", 0)) or _us(beatmap.duration))
     script.add_segment(AudioSegment(audio_mat, Timerange(0, song_us)), "song")
 
-    # --- 자막 트랙: 가사 + 입장 애니 -------------------------------------
-    text_style = TextStyle(
-        size=preset.text_size,
-        bold=True,
-        color=_hex_to_rgb(preset.text_color),
-        align=1,  # 가운데 정렬
-        auto_wrapping=True,
-    )
-    clip = ClipSettings(transform_y=-0.72)  # 화면 하단쪽 배치
-
+    # --- 자막 트랙: 가사(영어) + 선택적 한글 이중 자막 -------------------
     lyrics = clamp_segments_to_duration(lyric_segments, beatmap.duration)
+    bilingual = any(s.secondary for s in lyrics)
+
+    # 어떤 배경에서도 읽히도록 검은 테두리.
+    border = TextBorder(alpha=1.0, color=(0.0, 0.0, 0.0), width=18.0)
+
+    if bilingual:
+        # 영어 원문(위) + 한글 번역(아래) 두 트랙으로 자연스럽게.
+        en_style = TextStyle(size=preset.text_size, bold=True,
+                             color=_hex_to_rgb(preset.text_color), align=1, auto_wrapping=True)
+        ko_style = TextStyle(size=round(preset.text_size * 0.72, 2), bold=True,
+                             color=_hex_to_rgb(preset.secondary_color), align=1, auto_wrapping=True)
+        en_clip = ClipSettings(transform_y=-0.60)  # 위
+        ko_clip = ClipSettings(transform_y=-0.76)  # 아래
+        script.add_track(TrackType.text, "lyrics_ko")
+    else:
+        en_style = TextStyle(size=preset.text_size, bold=True,
+                             color=_hex_to_rgb(preset.text_color), align=1, auto_wrapping=True)
+        en_clip = ClipSettings(transform_y=-0.72)
+
     for seg in lyrics:
         dur_us = _us(max(seg.end - seg.start, 0.2))
         tr = Timerange(_us(seg.start), dur_us)
-        ts = TextSegment(seg.text, tr, style=text_style, clip_settings=clip)
-
         t_strong = _is_near_strong(seg.start, points)
-        intro_name = preset.pick_text_intro(t_strong)
-        member = _resolve(TextIntro, intro_name, warnings)
-        if member is not None:
+        intro = _resolve(TextIntro, preset.pick_text_intro(t_strong), warnings)
+
+        en = TextSegment(seg.text, tr, style=en_style, clip_settings=en_clip, border=border)
+        if intro is not None:
             try:
-                ts.add_animation(member)
+                en.add_animation(intro)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"자막 애니 적용 실패: {exc}")
+        script.add_segment(en, "lyrics")
 
-        script.add_segment(ts, "lyrics")
+        if bilingual and seg.secondary:
+            ko = TextSegment(seg.secondary, tr, style=ko_style, clip_settings=ko_clip, border=border)
+            if intro is not None:
+                try:
+                    ko.add_animation(intro)
+                except Exception:  # noqa: BLE001
+                    pass
+            script.add_segment(ko, "lyrics_ko")
 
     script.save()
     draft_path = os.path.join(config.draft_folder, config.draft_name)

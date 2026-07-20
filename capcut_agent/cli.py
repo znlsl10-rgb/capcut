@@ -65,6 +65,8 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
         "songbook": args.songbook,
         "song": args.song,
         "lyrics_file": args.lyrics_file,
+        "lyrics_ko_file": args.lyrics_ko_file,
+        "translate": args.translate,
         "keep_adlibs": args.keep_adlibs,
         "language": args.language,
         "whisper_model": args.whisper_model,
@@ -139,6 +141,24 @@ def _get_lyrics(config: AgentConfig, beatmap, official) -> list:
         )
     segments = clamp_segments_to_duration(segments, beatmap.duration)
     _log(f"[가사] {len(segments)}줄 확보")
+
+    # 이중 자막: 한글 번역 붙이기 (파일 우선, 없으면 자동 번역 옵션)
+    if config.lyrics_ko_file or config.translate:
+        from .translate import build_secondary
+
+        try:
+            segments = build_secondary(
+                segments,
+                ko_file=config.lyrics_ko_file,
+                auto_translate=config.translate,
+                target=config.translate_target,
+            )
+            n_ko = sum(1 for s in segments if s.secondary)
+            src = "파일" if config.lyrics_ko_file else "자동 번역"
+            _log(f"[이중자막] 한글({src}) {n_ko}줄 부착 → 영어 위 / 한글 아래")
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[이중자막] 한글 부착 실패(영어 단일로 진행): {exc}")
+
     return segments
 
 
@@ -271,6 +291,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--songbook", help="곡별 정답 가사 엑셀(Mindtrack 형식)")
     run.add_argument("--song", help="송북 안에서 사용할 곡명(정답 가사·무드 가져옴)")
     run.add_argument("--lyrics-file", dest="lyrics_file", help="정답 가사 텍스트 파일")
+    run.add_argument("--lyrics-ko", dest="lyrics_ko_file", help="줄 맞춤 한글 번역 파일(영한 이중 자막)")
+    run.add_argument("--translate", dest="translate", action="store_true", default=None,
+                     help="한글 파일 없을 때 자동 번역으로 이중 자막(deep-translator 필요)")
     run.add_argument(
         "--no-adlibs",
         dest="keep_adlibs",

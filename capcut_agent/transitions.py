@@ -32,7 +32,8 @@ class StylePreset:
         strong_transition_duration: 드롭/강박 전환 길이(초). 짧게 두면 컷이
             비트에 더 타이트하게 꽂혀 타격감이 커집니다.
         text_size: 자막 글자 크기(캡컷 상대 단위, 기본 5).
-        text_color: 자막 색(#RRGGBB).
+        text_color: 주 자막(영어 원문) 색(#RRGGBB).
+        secondary_color: 보조 자막(한글 번역) 색. 이중 자막용.
     """
 
     name: str
@@ -48,6 +49,7 @@ class StylePreset:
     strong_transition_duration: float = 0.2
     text_size: float = 8.0
     text_color: str = "#FFFFFF"
+    secondary_color: str = "#FFE39A"  # 한글 번역: 부드러운 웜톤
 
     def transition_duration_for(self, strong: bool) -> float:
         """강박 여부에 따른 전환 길이(초)."""

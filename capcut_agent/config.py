@@ -74,6 +74,11 @@ class AgentConfig:
     lyrics_file: Optional[str] = None
     keep_adlibs: bool = True
 
+    # 이중 자막(영어 원문 + 한글 번역)
+    lyrics_ko_file: Optional[str] = None   # 줄 맞춤 한글 가사 파일(가장 자연스러움)
+    translate: bool = False                # 한글 파일 없을 때 자동 번역 사용
+    translate_target: str = "ko"           # 보조 자막 언어
+
     language: Optional[str] = None
     whisper_model: str = "small"
 
@@ -154,6 +159,8 @@ class AgentConfig:
             raise FileNotFoundError(f"송북(엑셀) 파일을 찾을 수 없습니다: {self.songbook}")
         if self.lyrics_file and not os.path.isfile(self.lyrics_file):
             raise FileNotFoundError(f"가사 파일을 찾을 수 없습니다: {self.lyrics_file}")
+        if self.lyrics_ko_file and not os.path.isfile(self.lyrics_ko_file):
+            raise FileNotFoundError(f"한글 가사 파일을 찾을 수 없습니다: {self.lyrics_ko_file}")
 
     def resolved_output_srt(self) -> str:
         """가사 SRT 저장 경로. 미지정 시 draft_name 기반 기본값."""

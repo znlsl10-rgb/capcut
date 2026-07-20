@@ -15,11 +15,18 @@ from typing import List, Optional, Sequence, Tuple
 
 @dataclass
 class LyricSegment:
-    """타임스탬프가 있는 가사 한 줄."""
+    """타임스탬프가 있는 가사 한 줄.
+
+    Attributes:
+        start/end: 초.
+        text: 주 자막(보통 영어 원문).
+        secondary: 보조 자막(예: 한글 번역). 이중 자막용, 없으면 None.
+    """
 
     start: float  # 초
     end: float    # 초
     text: str
+    secondary: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.end < self.start:
@@ -88,7 +95,8 @@ def clamp_segments_to_duration(
         start = max(start, prev_end)
         if end <= start:
             continue
-        cleaned.append(LyricSegment(start=round(start, 3), end=round(end, 3), text=seg.text))
+        cleaned.append(LyricSegment(start=round(start, 3), end=round(end, 3),
+                                    text=seg.text, secondary=seg.secondary))
         prev_end = end
     return cleaned
 
