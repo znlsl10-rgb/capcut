@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>캡컷 에이전트 — 토킹 영상 자동 편집</title>
+<style>
+  :root{
+    --bg:#0B0E13; --panel:#141922; --panel2:#1B222D; --line:#28313F;
+    --tx:#E7ECF3; --muted:#8994A6; --accent:#22D3B0; --accent2:#0FA98C;
+    --ok:#22D3B0; --warn:#F5B14C; --err:#F26D6D; --skip:#5A6673;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(900px 500px at 80% -10%,#12312b 0%,var(--bg) 55%);
+    color:var(--tx);font-family:var(--font);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:720px;margin:0 auto;padding:40px 22px 60px}
+  .eyebrow{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-size:clamp(26px,5vw,38px);font-weight:800;letter-spacing:-.02em;margin:.2em 0 .1em}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14.5px}
+  .drop{border:2px dashed var(--line);border-radius:18px;background:var(--panel);
+    padding:44px 24px;text-align:center;transition:.15s;cursor:pointer}
+  .drop.over{border-color:var(--accent);background:var(--panel2)}
+  .drop .big{font-size:16px;font-weight:600}
+  .drop .hint{color:var(--muted);font-size:13px;margin-top:6px}
+  .drop.has{border-style:solid;border-color:var(--accent2)}
+  .file{display:none;align-items:center;gap:10px;justify-content:center;font-weight:600}
+  .file .x{color:var(--muted);font-size:12px;font-weight:500}
+  input[type=file]{display:none}
+  details{margin:16px 0 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px 14px}
+  summary{cursor:pointer;font-size:13.5px;color:var(--muted);padding:8px 0;font-weight:600}
+  .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;padding:6px 0 14px}
+  .opt label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+  .opt input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    color:var(--tx);padding:7px 9px;font-family:var(--mono);font-size:13px}
+  .go{margin-top:18px;width:100%;border:0;border-radius:12px;padding:14px;font-size:15px;font-weight:700;
+    background:linear-gradient(180deg,var(--accent),var(--accent2));color:#04120e;cursor:pointer}
+  .go:disabled{opacity:.45;cursor:not-allowed}
+  .steps{margin-top:26px;display:none;flex-direction:column;gap:2px}
+  .steps.on{display:flex}
+  .step{display:flex;align-items:flex-start;gap:13px;padding:13px 14px;border-radius:12px;background:var(--panel)}
+  .step+.step{margin-top:2px}
+  .dot{flex:0 0 auto;width:22px;height:22px;border-radius:50%;border:2px solid var(--line);
+    display:grid;place-items:center;font-size:12px;margin-top:1px;color:var(--muted)}
+  .step.run .dot{border-color:var(--accent);color:var(--accent);animation:spin 1s linear infinite;border-right-color:transparent}
+  .step.done .dot{border-color:var(--ok);background:var(--ok);color:#04120e}
+  .step.skip .dot{border-style:dashed}
+  .step.err .dot{border-color:var(--err);color:var(--err)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .step .body{flex:1;min-width:0}
+  .step .name{font-weight:600;font-size:14.5px}
+  .step.pending .name,.step.skip .name{color:var(--muted)}
+  .step .meta{font-size:12.5px;color:var(--muted);margin-top:2px;font-family:var(--mono)}
+  .step .tag{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:1px}
+  .card{display:none;margin-top:22px;border-radius:16px;padding:20px;border:1px solid var(--accent2);
+    background:linear-gradient(180deg,var(--panel2),var(--panel))}
+  .card.on{display:block}
+  .card.err{border-color:var(--err)}
+  .card h3{margin:0 0 12px;font-size:16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin:6px 0 14px}
+  .kpi{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .kpi .n{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:11px;color:var(--muted);margin-top:1px}
+  .path{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;word-break:break-all;color:var(--muted)}
+  .verify{margin-top:14px;font-size:13.5px;color:var(--tx);background:rgba(34,211,176,.08);
+    border-left:3px solid var(--accent);border-radius:0 10px 10px 0;padding:11px 14px}
+  .foot{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
+  @media (prefers-color-scheme:light){
+    :root{--bg:#F3F6F8;--panel:#FFFFFF;--panel2:#F0F5F4;--line:#DCE4E6;--tx:#101720;--muted:#5C6773;--accent:#0FA98C;--accent2:#0B8E76}
+    body{background:radial-gradient(900px 500px at 80% -10%,#d9f2ec 0%,var(--bg) 55%)}
+    .go{color:#fff}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">캡컷 에이전트 · 1단계 무음 컷</div>
+  <h1>토킹 영상, 올리면 알아서 잘라줌</h1>
+  <p class="sub">mp4/mov 를 올리면 무음 구간을 잘라 <b>점프컷 캡컷 드래프트</b>로 만들어요.
+     결과는 캡컷에서 열어 <b>직접 재생</b>해 확인하세요. (AI 자동 · 마지막 손질은 사람)</p>
+
+  <div id="drop" class="drop">
+    <div id="dropIdle">
+      <div class="big">🎬 여기에 영상을 끌어다 놓기</div>
+      <div class="hint">또는 클릭해서 선택 · mp4 / mov</div>
+    </div>
+    <div id="dropFile" class="file">
+      <span id="fileName"></span>
+      <span class="x" id="clearFile">✕ 지우기</span>
+    </div>
+  </div>
+  <input type="file" id="fileInput" accept="video/mp4,video/quicktime,.mp4,.mov">
+
+  <details>
+    <summary>⚙︎ 컷 감도 옵션</summary>
+    <div class="opts">
+      <div class="opt"><label>무음 판정 dB (낮을수록 엄격)</label><input id="threshold_db" type="number" value="-35" step="1"></div>
+      <div class="opt"><label>최소 무음 길이 (초)</label><input id="min_silence" type="number" value="0.35" step="0.05"></div>
+      <div class="opt"><label>말 앞뒤 여유 pad (초)</label><input id="pad" type="number" value="0.06" step="0.02"></div>
+    </div>
+  </details>
+
+  <button id="go" class="go" disabled>편집 시작 →</button>
+
+  <div id="steps" class="steps"></div>
+
+  <div id="card" class="card">
+    <h3 id="cardTitle">✅ 점프컷 드래프트 완성</h3>
+    <div class="grid" id="kpis"></div>
+    <div class="path" id="draftPath"></div>
+    <div class="verify" id="verify"></div>
+  </div>
+
+  <div class="foot">로컬에서만 동작 · 업로드 영상은 이 PC를 벗어나지 않습니다</div>
+</div>
+
+<script>
+const STEPS = [
+  {key:"upload",  name:"업로드"},
+  {key:"silence", name:"무음 감지"},
+  {key:"asr",     name:"음성 인식 (ASR)", tag:"3단"},
+  {key:"filler",  name:"잔말·NG 컷",     tag:"4단"},
+  {key:"draft",   name:"캡컷 드래프트 생성"},
+];
+let file = null;
+
+const $ = (id)=>document.getElementById(id);
+const drop=$("drop"), fi=$("fileInput");
+
+drop.addEventListener("click", ()=>fi.click());
+["dragover","dragenter"].forEach(e=>drop.addEventListener(e, ev=>{ev.preventDefault();drop.classList.add("over")}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e, ev=>{ev.preventDefault();drop.classList.remove("over")}));
+drop.addEventListener("drop", ev=>{ if(ev.dataTransfer.files[0]) setFile(ev.dataTransfer.files[0]); });
+fi.addEventListener("change", ()=>{ if(fi.files[0]) setFile(fi.files[0]); });
+$("clearFile").addEventListener("click", ev=>{ ev.stopPropagation(); setFile(null); });
+
+function setFile(f){
+  file=f;
+  if(f){
+    $("dropIdle").style.display="none";
+    $("dropFile").style.display="flex";
+    $("fileName").textContent="🎬 "+f.name+"  ("+(f.size/1048576).toFixed(1)+" MB)";
+    drop.classList.add("has");
+    $("go").disabled=false;
+  }else{
+    $("dropIdle").style.display="block";
+    $("dropFile").style.display="none";
+    drop.classList.remove("has"); $("go").disabled=true; fi.value="";
+  }
+}
+
+function renderSteps(){
+  const s=$("steps"); s.innerHTML=""; s.classList.add("on");
+  STEPS.forEach(st=>{
+    const el=document.createElement("div");
+    el.className="step pending"; el.id="st-"+st.key;
+    el.innerHTML=`<div class="dot">·</div><div class="body">
+      <div class="name">${st.name}${st.tag?`<span class="tag">${st.tag} 예정</span>`:""}</div>
+      <div class="meta"></div></div>`;
+    s.appendChild(el);
+  });
+}
+function setStep(key, state, meta){
+  const el=$("st-"+key); if(!el) return;
+  el.className="step "+state;
+  const dot=el.querySelector(".dot");
+  dot.textContent = state==="done"?"✓":state==="skip"?"–":state==="err"?"!":state==="run"?"":"·";
+  if(meta!==undefined) el.querySelector(".meta").textContent=meta;
+}
+
+$("go").addEventListener("click", start);
+
+async function start(){
+  if(!file) return;
+  $("go").disabled=true; $("card").classList.remove("on","err");
+  renderSteps();
+  // 업로드
+  setStep("upload","run","올리는 중…");
+  const fd=new FormData(); fd.append("file", file);
+  let job;
+  try{
+    const r=await fetch("/upload",{method:"POST",body:fd});
+    const j=await r.json();
+    if(j.error){ throw new Error(j.error); }
+    job=j.job_id;
+  }catch(e){ setStep("upload","err","업로드 실패: "+e.message); $("go").disabled=false; return; }
+
+  const qs=new URLSearchParams({
+    threshold_db:$("threshold_db").value, min_silence:$("min_silence").value, pad:$("pad").value,
+  });
+  const es=new EventSource(`/events/${job}?${qs}`);
+  es.onmessage=(ev)=>{
+    const d=JSON.parse(ev.data);
+    if(d.step==="error"){ handleError(d.message); es.close(); return; }
+    if(d.step==="done"){ finish(d.result); es.close(); return; }
+    applyStep(d);
+  };
+  es.onerror=()=>{ es.close(); $("go").disabled=false; };
+}
+
+function applyStep(d){
+  const running=[...document.querySelectorAll(".step.run")];
+  if(d.status==="running"){ setStep(d.step,"run","처리 중…"); }
+  else if(d.status==="skipped"){ setStep(d.step,"skip", d.info||"건너뜀"); }
+  else if(d.status==="done"){
+    let meta="완료";
+    if(d.step==="silence" && d.info){
+      const i=d.info;
+      meta=`길이 ${i.duration}s · 무음 ${i.silences}곳 · 보존 ${i.keeps}컷 · 제거 ${i.removed}s (${i.removed_pct}%)`;
+    }else if(d.step==="draft" && d.info){ meta=`세그먼트 ${d.info.segments}개`; }
+    else if(d.step==="upload" && d.info){ meta=d.info; }
+    setStep(d.step,"done",meta);
+  }
+}
+
+function handleError(msg){
+  const run=document.querySelector(".step.run");
+  if(run) setStep(run.id.replace("st-",""),"err",msg);
+  const c=$("card"); c.classList.add("on","err");
+  $("cardTitle").textContent="⚠️ 처리 중 문제";
+  $("kpis").innerHTML=""; $("draftPath").textContent=""; $("verify").textContent=msg;
+  $("go").disabled=false;
+}
+
+function finish(r){
+  const c=$("card"); c.classList.add("on"); c.classList.remove("err");
+  $("cardTitle").textContent="✅ 점프컷 드래프트 완성 — "+r.draft_name;
+  $("kpis").innerHTML=`
+    <div class="kpi"><div class="n">${r.duration}s</div><div class="l">원본</div></div>
+    <div class="kpi"><div class="n">${r.kept}s</div><div class="l">결과</div></div>
+    <div class="kpi"><div class="n">−${r.removed}s</div><div class="l">제거</div></div>
+    <div class="kpi"><div class="n">${r.segments}</div><div class="l">컷</div></div>`;
+  $("draftPath").textContent="📁 "+r.draft_path;
+  $("verify").innerHTML="👉 <b>캡컷을 (재)시작</b>하고 초안 목록에서 이 프로젝트를 열어 <b>직접 재생</b>하세요. "+
+    "무음이 잘 잘렸는지, 말 앞뒤가 잘리지 않았는지 재생으로만 검증됩니다.";
+  $("go").disabled=false;
+}
+</script>
+</body>
+</html>
