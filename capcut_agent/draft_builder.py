@@ -43,17 +43,52 @@ def _plan_points(
     config: AgentConfig,
     beatmap: BeatMap,
     lyric_segments: Sequence[LyricSegment] = (),
+    *,
+    min_gap: Optional[float] = None,
 ) -> List[TransitionPoint]:
     windows: List[Tuple[float, float]] = []
     if config.emphasize_lyrics and lyric_segments:
         windows = [(s.start, s.end) for s in lyric_segments]
     return select_transition_points(
         beatmap,
-        min_gap=config.min_transition_gap,
+        min_gap=config.min_transition_gap if min_gap is None else min_gap,
         subdivision=config.beat_subdivision,
         max_count=config.max_transitions,
         emphasis_windows=windows,
     )
+
+
+def compute_global_speed(total_footage: float, song_duration: float, slow_floor: float) -> float:
+    """소재 총 길이 대비 곡 길이로 전역 재생속도를 계산 (순수 함수).
+
+    소재가 넉넉하면 1.0(정상), 짧으면 곡을 채우도록 슬로우(하한 slow_floor).
+    예) 소재 40s, 곡 100s → 0.4 → 하한 0.5 로 클램프 → 0.5(2배 느림).
+    """
+    if song_duration <= 0 or total_footage <= 0:
+        return 1.0
+    ratio = total_footage / song_duration
+    return max(slow_floor, min(1.0, ratio))
+
+
+def _coverage_source(Timerange, material, target_len_us: int, cursor_us: int,
+                     speed: float, is_photo: bool):
+    """커버리지(슬로우) 모드용 소스 구간.
+
+    target(타임라인) 길이보다 짧은 소스를 잡아 느리게 재생(speed<1)합니다.
+    소스 소비량 = target_len * speed. 이미지는 슬로우 무의미하므로 그대로.
+    """
+    if is_photo or speed >= 1.0:
+        return _source_window(Timerange, material, target_len_us, cursor_us, is_photo)
+    mat_dur = int(getattr(material, "duration", 0) or 0)
+    src_len = max(1, int(round(target_len_us * speed)))
+    if mat_dur <= 0:
+        return Timerange(0, src_len)
+    if src_len >= mat_dur:  # 소재가 더 짧으면 전체 사용(효과적으로 더 느려짐)
+        return Timerange(0, mat_dur)
+    start = cursor_us % mat_dur
+    if start + src_len > mat_dur:
+        start = mat_dur - src_len
+    return Timerange(start, src_len)
 
 
 def assign_clips(
@@ -198,13 +233,8 @@ def build_draft(
     script.add_track(TrackType.audio, "song")
     script.add_track(TrackType.text, "lyrics")
 
-    # --- 배경 트랙: 여러 클립을 비트에 맞춰 컷 + 전환 + 줌 애니 -----------
+    # --- 배경 클립 소재 로드(읽기 실패한 파일은 경고 후 제외) -------------
     lyrics_for_plan = clamp_segments_to_duration(lyric_segments, beatmap.duration)
-    points = _plan_points(config, beatmap, lyrics_for_plan)
-    bounds = segment_boundaries(points, beatmap.duration)
-    strong_at = {round(p.time, 3): p.strong for p in points}
-
-    # 배경 클립 소재 로드(읽기 실패한 파일은 경고 후 제외).
     materials: List = []
     is_photo: List[bool] = []
     for path in config.resolved_backgrounds():
@@ -217,6 +247,31 @@ def build_draft(
         is_photo.append(getattr(mat, "material_type", "video") == "photo")
     if not materials:
         raise ValueError("사용 가능한 배경 클립이 없습니다.")
+
+    # 소재 모드 결정: 실제 영상이 있으면 커버리지(슬로우 채움), 이미지뿐이면 비트 몽타주.
+    has_video = any(not ph for ph in is_photo)
+    mode = config.footage_mode
+    if mode == "auto":
+        mode = "coverage" if has_video else "beat"
+    coverage = (mode == "coverage" and has_video)
+
+    global_speed = 1.0
+    if coverage:
+        total_footage = sum(int(getattr(m, "duration", 0) or 0)
+                            for m, ph in zip(materials, is_photo) if not ph) / SEC_US
+        global_speed = compute_global_speed(total_footage, beatmap.duration, config.slow_floor)
+        # 커버리지는 컷을 성글게(coverage_block 간격) → 슬로우 footage 가 매끄럽게.
+        points = _plan_points(config, beatmap, lyrics_for_plan,
+                              min_gap=max(config.min_transition_gap, config.coverage_block))
+        warnings.append(
+            f"[info] 커버리지 모드 · 전역 속도 {global_speed:.2f}x "
+            f"(소재 {total_footage:.1f}s → 곡 {beatmap.duration:.1f}s)"
+        )
+    else:
+        points = _plan_points(config, beatmap, lyrics_for_plan)
+
+    bounds = segment_boundaries(points, beatmap.duration)
+    strong_at = {round(p.time, 3): p.strong for p in points}
 
     num_segments = len(bounds) - 1
     assignment = assign_clips(num_segments, len(materials), config.clip_order, config.clip_seed)
@@ -231,8 +286,12 @@ def build_draft(
         clip_idx = assignment[idx]
         mat = materials[clip_idx]
         target = Timerange(_us(start_s), seg_dur_us)
-        source = _source_window(Timerange, mat, seg_dur_us, cursors[clip_idx], is_photo[clip_idx])
-        cursors[clip_idx] += seg_dur_us  # 다음에 이 클립을 쓰면 이어지는 부분 사용
+        if coverage:
+            source = _coverage_source(Timerange, mat, seg_dur_us, cursors[clip_idx],
+                                      global_speed, is_photo[clip_idx])
+        else:
+            source = _source_window(Timerange, mat, seg_dur_us, cursors[clip_idx], is_photo[clip_idx])
+        cursors[clip_idx] += source.duration  # 소비한 소스만큼 헤드 전진
         seg = VideoSegment(mat, target, source_timerange=source)
 
         # 세로/가로 비율이 다를 때 배경을 블러로 채워 빈 곳을 없앰.

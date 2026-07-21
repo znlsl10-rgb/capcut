@@ -62,6 +62,8 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
         "draft_folder": args.draft_folder,
         "style": args.style,
         "clip_order": args.clip_order,
+        "footage_mode": args.footage_mode,
+        "slow_floor": args.slow_floor,
         "songbook": args.songbook,
         "song": args.song,
         "lyrics_file": args.lyrics_file,
@@ -285,6 +287,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sequential", "shuffle"],
         help="클립 배치 순서 (sequential=순환, shuffle=무작위)",
     )
+    run.add_argument(
+        "--footage-mode",
+        dest="footage_mode",
+        choices=["auto", "coverage", "beat"],
+        help="소재 모드 (auto=영상이면 슬로우채움, coverage=강제 슬로우, beat=비트 몽타주)",
+    )
+    run.add_argument("--slow-floor", dest="slow_floor", type=float,
+                     help="최대 슬로우 속도 하한(0.1~1.0, 기본 0.5=최대 2배 느림)")
     run.add_argument("--draft-folder", dest="draft_folder", help="캡컷 초안 루트 폴더(생략 시 자동 감지)")
     run.add_argument("--name", help="초안(프로젝트) 이름")
     run.add_argument("--style", help=f"스타일 프리셋 ({', '.join(list_presets())})")

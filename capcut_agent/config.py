@@ -87,6 +87,11 @@ class AgentConfig:
     beat_subdivision: int = 1
     emphasize_lyrics: bool = True
 
+    # 소재 커버리지: 적은 영상을 슬로우로 자연스럽게 채우기
+    footage_mode: str = "auto"      # auto | coverage(슬로우 채움) | beat(비트 몽타주)
+    slow_floor: float = 0.5         # 최대 슬로우(속도 하한). 0.5=최대 2배 느림
+    coverage_block: float = 3.5     # 커버리지 컷 간격(초, 성글게)
+
     lyrics_srt: Optional[str] = None
     output_srt: Optional[str] = None
 
@@ -106,6 +111,10 @@ class AgentConfig:
             raise ValueError("min_transition_gap 은 0 이상이어야 합니다.")
         if self.beat_subdivision < 1:
             raise ValueError("beat_subdivision 은 1 이상이어야 합니다.")
+        if self.footage_mode not in ("auto", "coverage", "beat"):
+            raise ValueError("footage_mode 는 auto/coverage/beat 중 하나여야 합니다.")
+        if not (0.1 <= self.slow_floor <= 1.0):
+            raise ValueError("slow_floor 는 0.1~1.0 이어야 합니다.")
         if self.clip_order not in ("sequential", "shuffle"):
             raise ValueError("clip_order 는 'sequential' 또는 'shuffle' 이어야 합니다.")
         if not (self.background_path or self.background_paths or self.background_dir):
