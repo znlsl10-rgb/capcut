@@ -89,6 +89,15 @@
       </div>
       <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.m4a">
     </div>
+    <div>
+      <div class="fieldlabel">3 · 배경 영상 (선택 · 여러 개 · 없으면 무드 자동)</div>
+      <div id="dropBg" class="drop">
+        <div id="bgIdle"><div class="big">🎞️ 내 영상 끌어다 놓기 (여러 개)</div>
+          <div class="hint">적게 줘도 슬로우로 늘려 자연스럽게 채웁니다 · 비우면 무드 배경 자동</div></div>
+        <div id="bgFile" class="big" style="display:none"></div>
+      </div>
+      <input type="file" id="bgInput" accept="video/*,image/*" multiple>
+    </div>
   </div>
 
   <div class="opts" style="margin-top:14px">
@@ -112,7 +121,7 @@
 
 <script>
 const $=(id)=>document.getElementById(id);
-let file=null, songs=[];
+let file=null, songs=[], bgFiles=[], bgId=null;
 
 const STEPS=[
   {key:"upload", name:"업로드"},
@@ -153,6 +162,22 @@ function setFile(f){
 }
 function updateGo(){ $("go").disabled = !(file && $("song").value); }
 
+// 배경 영상(선택, 여러 개)
+const dropBg=$("dropBg"), bgI=$("bgInput");
+dropBg.addEventListener("click",()=>bgI.click());
+["dragover","dragenter"].forEach(e=>dropBg.addEventListener(e,ev=>{ev.preventDefault();dropBg.classList.add("over")}));
+["dragleave","drop"].forEach(e=>dropBg.addEventListener(e,ev=>{ev.preventDefault();dropBg.classList.remove("over")}));
+dropBg.addEventListener("drop",ev=>{ if(ev.dataTransfer.files.length) setBg(ev.dataTransfer.files); });
+bgI.addEventListener("change",()=>{ if(bgI.files.length) setBg(bgI.files); });
+function setBg(files){
+  bgFiles=[...files]; bgId=null;
+  const has=bgFiles.length>0;
+  $("bgIdle").style.display=has?"none":"block";
+  $("bgFile").style.display=has?"block":"none";
+  if(has) $("bgFile").textContent="🎞️ 내 영상 "+bgFiles.length+"개 · 슬로우로 곡 전체 채움";
+  dropBg.classList.toggle("has",has);
+}
+
 $("go").addEventListener("click", start);
 function renderSteps(){
   const s=$("steps"); s.innerHTML=""; s.classList.add("on");
@@ -179,11 +204,20 @@ async function start(){
     if(j.error) throw new Error(j.error); job=j.job_id;
   }catch(e){ setStep("upload","err","업로드 실패: "+e.message); $("go").disabled=false; return; }
 
+  // 배경 영상(있으면) 업로드
+  if(bgFiles.length && !bgId){
+    try{ const bfd=new FormData(); bgFiles.forEach(f=>bfd.append("files",f));
+      const bj=await (await fetch("/upload_bg",{method:"POST",body:bfd})).json();
+      if(bj.bg_id) bgId=bj.bg_id;
+    }catch(e){ /* 배경 업로드 실패 시 무드 자동으로 폴백 */ }
+  }
+
   const qs=new URLSearchParams({
     song:$("song").value,
     ko: $("ko").checked?"auto":"off",
     timing: $("whisper").checked?"whisper":"distribute",
   });
+  if(bgId) qs.set("bg", bgId);
   const es=new EventSource(`/events/${job}?${qs}`);
   es.onmessage=(ev)=>{
     const d=JSON.parse(ev.data);

@@ -28,6 +28,7 @@ BG_CACHE.mkdir(parents=True, exist_ok=True)
 MIN_STEP_SECONDS = 0.5
 _ASR_LOCK = asyncio.Lock()  # Whisper 직렬화
 _jobs: Dict[str, str] = {}          # job_id → 오디오 경로
+_bg_jobs: Dict[str, List[str]] = {}  # bg_id → 사용자 배경 클립 경로 목록
 _cache: Dict[str, Any] = {}         # (job_id|song|params) → 결과
 
 
@@ -117,14 +118,20 @@ async def _pipeline(app, job_id: str, params: Dict[str, Any]):
                 "info": {"lines": len(segments), "ko": n_ko, "mood": song.mood,
                          "style": song.style(), "note": ko_note}})
 
-    # --- 배경 자동 -------------------------------------------------------
+    # --- 배경: 내 클립(있으면) → 없으면 무드 자동 -----------------------
     yield _sse({"step": "background", "status": "running"})
     t0 = time.monotonic()
-    bg = await asyncio.to_thread(auto_background_clips, song.mood, str(BG_CACHE / song.mood))
+    user_clips = _bg_jobs.get(params.get("bg", ""))
+    if user_clips:
+        bg = list(user_clips)
+        bg_info = f"내 영상 {len(bg)}개 (슬로우 커버리지로 채움)"
+    else:
+        bg = await asyncio.to_thread(auto_background_clips, song.mood, str(BG_CACHE / song.mood))
+        guide = song.background_guide()
+        bg_info = f"무드 자동 {len(bg)}컷 · {guide.get('video','')} · {guide.get('color','')}"
     await _min_delay(t0)
-    guide = song.background_guide()
     yield _sse({"step": "background", "status": "done",
-                "info": {"clips": len(bg), "guide": f"{guide.get('video','')} · {guide.get('color','')}"}})
+                "info": {"clips": len(bg), "guide": bg_info}})
 
     # --- 드래프트 --------------------------------------------------------
     draft_folder = _resolve_draft_folder(params.get("draft_folder") or app.state.draft_folder)
@@ -226,6 +233,31 @@ def create_app(*, songbook: Optional[str] = None, draft_folder: Optional[str] = 
         _jobs[job_id] = str(dest)
         return JSONResponse({"job_id": job_id, "filename": getattr(up, "filename", None)})
 
+    async def upload_bg(request):  # noqa: WPS430
+        form = await request.form()
+        files = form.getlist("files")
+        saved: List[str] = []
+        hasher = hashlib.sha256()
+        for up in files:
+            if not hasattr(up, "read"):
+                continue
+            data = await up.read()
+            if not data:
+                continue
+            h = _hash_bytes(data)
+            hasher.update(h.encode())
+            ext = os.path.splitext(getattr(up, "filename", "") or "")[1] or ".mp4"
+            dest = UPLOAD_DIR / "bg" / f"{h}{ext}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.exists():
+                dest.write_bytes(data)
+            saved.append(str(dest))
+        if not saved:
+            return JSONResponse({"error": "배경 영상이 없습니다."}, status_code=400)
+        bg_id = hasher.hexdigest()[:16]
+        _bg_jobs[bg_id] = saved
+        return JSONResponse({"bg_id": bg_id, "count": len(saved)})
+
     async def events(request):  # noqa: WPS430
         job_id = request.path_params["job_id"]
         params: Dict[str, Any] = dict(request.query_params)
@@ -242,5 +274,6 @@ def create_app(*, songbook: Optional[str] = None, draft_folder: Optional[str] = 
     app.add_route("/", index, methods=["GET"])
     app.add_route("/songs", songs, methods=["GET"])
     app.add_route("/upload", upload, methods=["POST"])
+    app.add_route("/upload_bg", upload_bg, methods=["POST"])
     app.add_route("/events/{job_id}", events, methods=["GET"])
     return app

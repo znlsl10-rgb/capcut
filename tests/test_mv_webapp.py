@@ -67,3 +67,19 @@ def test_upload_returns_job_id():
     c = TestClient(create_app())
     r = c.post("/upload", files={"file": ("song.mp3", b"audio-bytes", "audio/mpeg")})
     assert r.status_code == 200 and "job_id" in r.json()
+
+
+def test_upload_bg_multiple():
+    c = TestClient(create_app())
+    r = c.post("/upload_bg", files=[
+        ("files", ("a.mp4", b"vid1", "video/mp4")),
+        ("files", ("b.mp4", b"vid2", "video/mp4")),
+    ])
+    assert r.status_code == 200
+    assert r.json()["count"] == 2 and "bg_id" in r.json()
+
+
+def test_upload_bg_empty_rejected():
+    c = TestClient(create_app())
+    r = c.post("/upload_bg", files=[("files", ("x.mp4", b"", "video/mp4"))])
+    assert r.status_code == 400
