@@ -1,0 +1,149 @@
+{
+  "trend_summary": "2026 유튜브 쇼츠는 첫 3초 훅이 조회수를 결정하고, 15~45초의 짧고 강렬한 구조가 최적이다. 감정 몰입 순간과 'oddly satisfying' 비주얼, 트렌딩 오디오(epic buildup)가 바이럴 핵심이며, 화면 중앙 볼드 대비 자막(glow/highlight)이 표준 포맷이다. 성공/동기부여 장르는 '고난 → 반전 → 각성'의 스토리 구조로 끝까지 시청을 유도할 때 완주율이 가장 높다.",
+  "title": "새벽 4시, 세상이 널 비웃을 때 — 그때가 시작이다",
+  "hook": "모두가 잠든 새벽 4시, 너 혼자만 깨어있다면… 넌 이미 이기고 있다.",
+  "target_emotion": "고독·자기연민 → 분노 → 소름·각성 → 벅찬 희망",
+  "music_mood": "epic orchestral buildup, deep sub-bass heartbeat intro rising to triumphant strings and choir drop",
+  "music_bpm": 128,
+  "total_duration_sec": 45,
+  "scenes": [
+    {
+      "id": 1,
+      "start_sec": 0,
+      "end_sec": 3,
+      "mood": "새벽의 고독",
+      "visual_keyword": "cinematic close-up of a young person sitting alone in a dark room at 4am, only a desk lamp glowing, cold blue tones, dust particles in the light, shallow depth of field, 9:16 vertical",
+      "caption": "모두가 잠든 새벽 4시",
+      "caption_style": "bold_white_center_glow",
+      "cut_type": "slow_zoom_in",
+      "emotion_curve": "low"
+    },
+    {
+      "id": 2,
+      "start_sec": 3,
+      "end_sec": 7,
+      "mood": "세상의 비웃음",
+      "visual_keyword": "blurred faces of people laughing and pointing, out-of-focus crowd, protagonist's back in sharp focus, desaturated grey city street, rain, moody film grain, vertical 9:16",
+      "caption": "세상이 널 비웃을 때",
+      "caption_style": "bold_white_center_glow",
+      "cut_type": "handheld_shake",
+      "emotion_curve": "low"
+    },
+    {
+      "id": 3,
+      "start_sec": 7,
+      "end_sec": 11,
+      "mood": "지친 몸",
+      "visual_keyword": "exhausted athlete collapsed on gym floor, sweat dripping, single overhead light, breathing heavily, dramatic chiaroscuro lighting, slow motion, vertical 9:16",
+      "caption": "포기하고 싶은 그 순간",
+      "caption_style": "bold_white_center",
+      "cut_type": "slow_motion",
+      "emotion_curve": "low"
+    },
+    {
+      "id": 4,
+      "start_sec": 11,
+      "end_sec": 15,
+      "mood": "내면의 목소리",
+      "visual_keyword": "extreme close-up of determined eyes opening, reflection of a distant goal in the pupil, tear rolling down, warm light beginning to creep in from the side, vertical 9:16",
+      "caption": "딱 한 번만 더.",
+      "caption_style": "bold_yellow_center_highlight",
+      "cut_type": "match_cut",
+      "emotion_curve": "mid"
+    },
+    {
+      "id": 5,
+      "start_sec": 15,
+      "end_sec": 19,
+      "mood": "일어섬",
+      "visual_keyword": "silhouette rising to feet against a window as first sunrise light breaks, dust and sweat glowing in golden backlight, low-angle heroic shot, vertical 9:16",
+      "caption": "무너진 자리에서 다시 일어난다",
+      "caption_style": "bold_white_center_glow",
+      "cut_type": "whip_pan",
+      "emotion_curve": "mid"
+    },
+    {
+      "id": 6,
+      "start_sec": 19,
+      "end_sec": 23,
+      "mood": "반복되는 노력 (몽타주)",
+      "visual_keyword": "fast montage of relentless training: running stairs, writing at desk, lifting weights, coding late night, each clip 0.5s, motion blur transitions, energetic, warm tones rising, vertical 9:16",
+      "caption": "남들이 쉴 때, 너는 쌓는다",
+      "caption_style": "bold_white_center_highlight",
+      "cut_type": "fast_montage",
+      "emotion_curve": "high"
+    },
+    {
+      "id": 7,
+      "start_sec": 23,
+      "end_sec": 27,
+      "mood": "고비",
+      "visual_keyword": "person pushing against a strong headwind on a mountain ridge, storm clouds, jacket flapping violently, gritty determined face, dramatic wide shot, vertical 9:16",
+      "caption": "그래도 폭풍은 온다",
+      "caption_style": "bold_white_center",
+      "cut_type": "push_in",
+      "emotion_curve": "high"
+    },
+    {
+      "id": 8,
+      "start_sec": 27,
+      "end_sec": 31,
+      "mood": "반전 — 각성",
+      "visual_keyword": "the storm suddenly parts, brilliant sunbeam bursts through clouds onto the protagonist standing tall at the summit, arms slowly rising, epic god-rays, oddly satisfying symmetry, vertical 9:16",
+      "caption": "폭풍은… 널 강하게 만들려고 온 거야",
+      "caption_style": "bold_gold_center_glow",
+      "cut_type": "reveal_pull_back",
+      "emotion_curve": "peak"
+    },
+    {
+      "id": 9,
+      "start_sec": 31,
+      "end_sec": 35,
+      "mood": "결실",
+      "visual_keyword": "triumphant moment — crowd rising in slow motion applause, confetti falling, protagonist center frame with tears and a smile, warm golden hour glow, cinematic, vertical 9:16",
+      "caption": "그 새벽들이 오늘을 만들었다",
+      "caption_style": "bold_white_center_highlight",
+      "cut_type": "slow_motion",
+      "emotion_curve": "peak"
+    },
+    {
+      "id": 10,
+      "start_sec": 35,
+      "end_sec": 39,
+      "mood": "진실의 선언",
+      "visual_keyword": "protagonist looking directly into camera, calm and powerful, city skyline sunrise behind, soft rim light, intimate eye contact, vertical 9:16",
+      "caption": "성공은 재능이 아니라, 버틴 자에게 온다",
+      "caption_style": "bold_yellow_center_glow",
+      "cut_type": "static_intense",
+      "emotion_curve": "high"
+    },
+    {
+      "id": 11,
+      "start_sec": 39,
+      "end_sec": 42,
+      "mood": "너에게",
+      "visual_keyword": "sunrise over a vast horizon, empty road stretching forward, warm light flooding the frame, hopeful and expansive, lens flare, vertical 9:16",
+      "caption": "지금 이 영상을 보는 너에게",
+      "caption_style": "bold_white_center",
+      "cut_type": "slow_zoom_out",
+      "emotion_curve": "high"
+    },
+    {
+      "id": 12,
+      "start_sec": 42,
+      "end_sec": 45,
+      "mood": "행동 촉구",
+      "visual_keyword": "black screen fading in bold text, single spotlight, minimal, powerful, high contrast, vertical 9:16",
+      "caption": "오늘, 딱 하나만 시작해. 그게 전부야.",
+      "caption_style": "bold_gold_center_glow",
+      "cut_type": "fade_to_text",
+      "emotion_curve": "high"
+    }
+  ],
+  "trend_tags": ["#동기부여", "#성공", "#새벽루틴", "#자기계발", "#포기하지마", "#motivation", "#mindset", "#shorts", "#성공마인드", "#갓생"],
+  "platform_tips": {
+    "youtube_shorts": "세로 9:16, 45초 이내. 첫 3초 훅에 자막+음악 임팩트를 모두 몰아넣기. 제목과 첫 자막에 '새벽 4시' 같은 구체적 숫자를 넣어 클릭 유도. 완주율을 높이기 위해 8번 씬의 반전을 미리 예고하지 말 것.",
+    "instagram_reels": "첫 1초가 전부. 릴스는 커버(썸네일) 텍스트를 '새벽 4시…'로 고정하고, 트렌딩 오디오를 얹어 노출 확대. 자막은 안전영역(상하 15%) 안쪽에 배치.",
+    "tiktok": "빠른 컷(0.5초 몽타주)이 강점. 훅 직후 바로 텐션을 올리고, 마지막 CTA에 '저장👆' 유도 문구를 자막으로 추가하면 저장률 상승."
+  }
+}
