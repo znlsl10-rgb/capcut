@@ -18,6 +18,9 @@
 
 ## ✨ 특징
 
+- **참고 영상 벤치마킹** — 잘 만든 영상을 하나 주면 **컷 편집 속도 · 음악 템포 ·
+  자막 위치 · 화면 비율**을 분석해, 내 로컬 클립으로 **유사한 느낌**의 영상을
+  자동 편집합니다. (아래 "참고 영상 벤치마킹" 섹션)
 - **여러 클립 비트 배치** — 배경 클립 여러 개를 넣으면 **비트마다 다른 클립**으로
   전환되는 몽타주 생성(`sequential` 순환 / `shuffle` 무작위). 컷은 항상 감지된
   비트 시각에 놓여 **박자에 정확히** 맞습니다.
@@ -128,6 +131,70 @@ python -m capcut_agent run --config config.yaml --dry-run
 ```bash
 python -m capcut_agent styles
 ```
+
+---
+
+## 🔬 참고 영상 벤치마킹 (내 영상으로 유사하게)
+
+잘 만든 **참고 영상**을 하나 주면, 그 영상의 **편집 레시피**(컷 편집 속도 ·
+음악 템포 · 자막 위치 · 화면 비율)를 분석해 **내 로컬 클립**으로 유사한 느낌의
+영상을 자동 편집합니다. 벤치마킹하는 3요소는 요청하신 **자막 · 음악 · 컷편집**
+그대로입니다.
+
+동작 순서:
+
+1. **분석** — `ffmpeg` 장면 전환 감지로 컷 리듬(분당 컷 수·컷 길이)을 재고,
+   오디오 템포(BPM)를 측정하며, 프레임을 샘플링해 자막 밴드의 세로 위치를
+   추정합니다. 해상도/비율도 읽습니다.
+2. **벤치마크** — 분석값으로 **스타일 프리셋 · 전환 간격 · 소재 모드 · 출력
+   해상도 · 자막 높이**를 자동 결정합니다.
+3. **적용** — 내 클립 + 음악(내 곡 또는 참고 영상 오디오)으로 캡컷 초안을
+   만듭니다. 컷은 내 음악의 비트에 놓이되 **참고 영상만큼 촘촘하게/성글게** 끊고,
+   자막은 참고 영상과 **같은 높이**에 놓입니다.
+
+### 분석만 (편집 레시피 미리보기)
+
+```bash
+python -m capcut_agent analyze --reference ref.mp4 --out profile.json
+```
+
+출력 예:
+
+```
+🔬 참고 영상 분석 — ref.mp4
+   포맷    1080x1920 · 세로 · 30fps · 28.4s  · 오디오 있음
+   음악    ~140 BPM
+   컷편집  46컷 · 분당 97.2컷 · 컷 길이 중앙값 0.58s (최단 0.20s)
+   자막    하단 밴드 (세로 0.86 · 대비 3.4x)
+   ⇒ 벤치마크 스타일 'energetic' · 전환간격 ~0.49s · 소재모드 beat
+```
+
+### 벤치마킹해서 내 영상 만들기
+
+```bash
+# 내 곡을 사운드트랙으로
+python -m capcut_agent benchmark \
+  --reference ref.mp4 \
+  --background-dir ./myclips \
+  --audio mysong.mp3 \
+  --draft-folder "~/Movies/CapCut/User Data/Projects/com.lveditor.draft"
+
+# 참고 영상의 오디오를 그대로 음악으로 사용
+python -m capcut_agent benchmark \
+  --reference ref.mp4 --background-dir ./myclips --use-reference-audio
+
+# 스타일만 직접 지정(나머지는 참고 영상에서 자동)
+python -m capcut_agent benchmark --reference ref.mp4 \
+  --background-dir ./myclips --audio mysong.mp3 --style goosebump --dry-run
+```
+
+자막은 사운드트랙을 Whisper 로 받아써 채웁니다. 정답 가사(`--songbook`/`--song`,
+`--lyrics-file`), 영한 이중 자막(`--lyrics-ko`/`--translate`) 옵션은 `run` 과
+동일하게 쓸 수 있습니다.
+
+> 분석에는 **ffmpeg/ffprobe** 가 필요합니다(장면 전환 감지·오디오/프레임 추출).
+> 템포·자막 추정은 부가 정보라 실패해도 나머지는 그대로 진행합니다
+> (`--no-music` / `--no-subtitles` 로 생략해 빠르게 돌릴 수 있어요).
 
 ---
 
