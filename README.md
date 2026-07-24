@@ -226,6 +226,24 @@ python -m capcut_agent run \
 > 여러 컷을 뽑는 방식을 권장합니다(identity/reference). 그러면 컷이 바뀌어도
 > 같은 차·같은 도시가 유지됩니다.
 
+### 촬영 리스트(shot recipe) — 통일감 + 다양성
+
+`capcut_agent/shotlist.py` 는 **기준 이미지 1장**으로 만들 다양한 컷의 프롬프트
+세트를 정해진 규칙으로 만들어 줍니다. 규칙(코드로 고정):
+
+- 모든 컷은 **기준 이미지와 동일한 스타일·분위기·화질**로 통일(참조 접미사 자동 부착).
+- **중간중간 1인칭 시점(POV)** 을 섞고, 1인칭엔 **자연스러운 손떨림**을 넣음.
+- 피사체가 **차량**이면 **운전자 1인칭 시점**을 반드시 포함.
+- 시네마틱 컷(establishing·orbit·트래킹·클로즈업·크레인)과 1인칭 컷을 번갈아 배치.
+
+```python
+from capcut_agent.shotlist import build_shots, summarize_shots
+shots = build_shots("matte black sports car in a neon city at night",
+                    is_vehicle=True, count=6, min_pov=2)
+print(summarize_shots(shots))   # 각 컷 이름/유형
+# shots[i]["prompt"] 를 이미지-투-비디오 생성기(예: 힉스필드 Seedance)에 그대로 전달
+```
+
 ---
 
 ## 📁 캡컷 초안 폴더 위치
