@@ -248,6 +248,16 @@ def build_draft(
     if not materials:
         raise ValueError("사용 가능한 배경 클립이 없습니다.")
 
+    # 별도 곡 오디오 결정: audio_path 가 오디오면 별도 트랙(배경 영상은 음소거),
+    # 영상/부재면 배경 영상 자체의 오디오를 사용(배경 볼륨 유지).
+    audio_mat = None
+    try:
+        audio_mat = AudioMaterial(config.audio_path)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"[info] 별도 곡 오디오 없음 → 배경 영상의 오디오 사용 ({exc})")
+    separate_audio = audio_mat is not None
+    bg_volume = 0.0 if separate_audio else 1.0
+
     # 소재 모드 결정: 실제 영상이 있으면 커버리지(슬로우 채움), 이미지뿐이면 비트 몽타주.
     has_video = any(not ph for ph in is_photo)
     mode = config.footage_mode
@@ -292,7 +302,8 @@ def build_draft(
         else:
             source = _source_window(Timerange, mat, seg_dur_us, cursors[clip_idx], is_photo[clip_idx])
         cursors[clip_idx] += source.duration  # 소비한 소스만큼 헤드 전진
-        seg = VideoSegment(mat, target, source_timerange=source)
+        # 별도 곡이 있으면 배경 영상은 음소거(곡만 들리게), 없으면 배경 오디오 사용.
+        seg = VideoSegment(mat, target, source_timerange=source, volume=bg_volume)
 
         # 세로/가로 비율이 다를 때 배경을 블러로 채워 빈 곳을 없앰.
         try:
@@ -334,10 +345,11 @@ def build_draft(
 
         script.add_segment(seg, "background")
 
-    # --- 오디오 트랙: 노래 원본 ------------------------------------------
-    audio_mat = AudioMaterial(config.audio_path)
-    song_us = min(_us(beatmap.duration), int(getattr(audio_mat, "duration", 0)) or _us(beatmap.duration))
-    script.add_segment(AudioSegment(audio_mat, Timerange(0, song_us)), "song")
+    # --- 오디오 트랙: 별도 곡 오디오가 있을 때만 ------------------------
+    if separate_audio:
+        song_us = min(_us(beatmap.duration),
+                      int(getattr(audio_mat, "duration", 0)) or _us(beatmap.duration))
+        script.add_segment(AudioSegment(audio_mat, Timerange(0, song_us)), "song")
 
     # --- 자막 트랙: 가사(영어) + 선택적 한글 이중 자막 -------------------
     lyrics = clamp_segments_to_duration(lyric_segments, beatmap.duration)
