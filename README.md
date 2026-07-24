@@ -198,6 +198,36 @@ python -m capcut_agent benchmark --reference ref.mp4 \
 
 ---
 
+## 🤖 AI 소재 "최소 제작" (적게 만들어 슬로우로 채우기)
+
+배경 footage 를 **AI(예: 힉스필드)로 최소 개수만 생성**하고, 남는 길이는
+**슬로우(커버리지 모드)로 늘려** 곡 전체를 채우는 전략입니다. 동일한 차·배경·
+분위기의 짧은 클립 몇 개만 있으면, 비트 컷·엑셀 자막이 얹혀 뮤직비디오가 됩니다.
+
+**필요한 최소 클립 수**는 곡 길이·클립 길이·슬로우 한도로 계산합니다:
+
+```bash
+python -m capcut_agent genplan --song-duration 100 --clip-len 5 --slow-floor 0.5
+# → 클립 1개가 10.0s 를 덮음 → 최소 10개 생성 → 0.50x(2배 슬로우)로 곡을 채움
+```
+
+계산된 개수만큼 AI 클립을 만들어 한 폴더에 모은 뒤, 그 폴더로 초안을 만듭니다
+(커버리지 모드가 자동으로 슬로우를 적용합니다):
+
+```bash
+python -m capcut_agent run \
+  --audio mysong.mp3 --background-dir ./ai_clips \
+  --footage-mode coverage --slow-floor 0.5 \
+  --songbook Mindtrack.xlsx --song "곡명"
+```
+
+> AI 클립을 만들 때는 **한 영상 안에서 동일한 차·배경·분위기**가 유지되도록,
+> 기준 이미지 1장을 만든 뒤 그 이미지를 **참조**로 걸어 카메라 움직임만 바꿔
+> 여러 컷을 뽑는 방식을 권장합니다(identity/reference). 그러면 컷이 바뀌어도
+> 같은 차·같은 도시가 유지됩니다.
+
+---
+
 ## 📁 캡컷 초안 폴더 위치
 
 `--draft-folder` 에는 캡컷이 초안을 저장하는 폴더를 지정합니다:

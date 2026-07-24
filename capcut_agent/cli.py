@@ -385,6 +385,20 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     return _execute_pipeline(config, dry_run=args.dry_run)
 
 
+def cmd_genplan(args: argparse.Namespace) -> int:
+    """AI 소재 최소 제작 계획(필요한 최소 클립 수)을 계산해 출력합니다."""
+    from .genplan import plan_generation, summarize_plan
+
+    plan = plan_generation(
+        args.song_duration,
+        clip_len=args.clip_len,
+        slow_floor=args.slow_floor,
+        variety=args.variety,
+    )
+    print(summarize_plan(plan))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="capcut_agent",
@@ -486,6 +500,21 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--output-srt", dest="output_srt", help="받아쓴 가사 SRT 저장 경로")
     bench.add_argument("--dry-run", action="store_true", help="초안 생성 없이 계획만 출력")
     bench.set_defaults(func=cmd_benchmark)
+
+    # --- genplan: AI 소재 최소 제작 계획 -------------------------------
+    genplan = sub.add_parser(
+        "genplan",
+        help="AI 소재를 슬로우로 늘려 곡을 채울 때 필요한 최소 클립 수 계산",
+    )
+    genplan.add_argument("--song-duration", dest="song_duration", type=float, required=True,
+                         help="곡 길이(초)")
+    genplan.add_argument("--clip-len", dest="clip_len", type=float, default=5.0,
+                         help="생성할 클립 1개 길이(초, 기본 5)")
+    genplan.add_argument("--slow-floor", dest="slow_floor", type=float, default=0.5,
+                         help="최대 슬로우 속도 하한(0.1~1.0, 기본 0.5=최대 2배 느림)")
+    genplan.add_argument("--variety", type=float, default=1.0,
+                         help="다양성 계수(>=1.0, 최소보다 여유 있게. 기본 1.0)")
+    genplan.set_defaults(func=cmd_genplan)
 
     styles = sub.add_parser("styles", help="사용 가능한 스타일 목록")
     styles.set_defaults(func=cmd_styles)
