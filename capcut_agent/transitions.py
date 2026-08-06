@@ -131,6 +131,41 @@ PRESETS: Dict[str, StylePreset] = {
         text_size=8.0,
         text_color="#FFFFFF",
     ),
+    # 동기부여 쇼츠: 굵고 잘 읽히는 자막 + 깔끔하고 단단한 컷. 화려함보다
+    # 메시지 전달력 우선. 문장 전환마다 임팩트 있는 줌, 핵심 구간엔 섬광.
+    "motivation": StylePreset(
+        name="motivation",
+        description="동기부여 쇼츠 — 굵은 자막 + 단단한 줌컷, 핵심 문장에 임팩트",
+        transitions=["Zoom_to_Change", "Snap_Zoom", "Push_Away_2", "Pull_In"],
+        strong_transitions=["White_Flash", "Subject_Flash", "Lumin_Flash", "Flash"],
+        bg_intro="Focus",
+        bg_strong_intro="Snap_Zoom",
+        text_intro="Bumper_Car",
+        text_strong_intro="Click",
+        scene_effect="Bling",
+        transition_duration=0.32,
+        strong_transition_duration=0.16,
+        text_size=11.0,          # 쇼츠 굵고 크게(한눈에)
+        text_color="#FFFFFF",
+        secondary_color="#FFD24A",  # 강조 워드 웜 옐로
+    ),
+    # 시네마틱 동기부여: 잔잔하고 웅장한 무드. 나레이션 중심 명언/스토리.
+    "cinematic": StylePreset(
+        name="cinematic",
+        description="시네마틱 동기부여 — 은은한 줌/디졸브, 명언·스토리 나레이션용",
+        transitions=["Fade", "Dreamy_Bubbles", "Light_Leaks", "Pull_In"],
+        strong_transitions=["Lumin_Flash", "Film_Burn", "Light_Leaks", "Hot_Shimmers"],
+        bg_intro="Focus",
+        bg_strong_intro="Chroma_Wave",
+        text_intro="Wiping_In",
+        text_strong_intro="Golden_Dust",
+        scene_effect="Dreamy_Halo",
+        transition_duration=0.6,
+        strong_transition_duration=0.4,
+        text_size=10.0,
+        text_color="#FFFFFF",
+        secondary_color="#FFD24A",
+    ),
     # 레트로: 필름/글리치 감성.
     "retro": StylePreset(
         name="retro",

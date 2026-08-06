@@ -16,6 +16,30 @@
 
 ---
 
+## 🚀 동기부여 쇼츠 에이전트 (`shorts/`)
+
+성공 **동기부여 유튜브 채널의 구독자 성장**을 목표로, 내 소재를 편집해 **세로 쇼츠**를
+만들고 **게시 메타데이터**까지 자동 생성하는 레이어입니다. 위 뮤직비디오 엔진을 그대로
+재사용합니다 — *노래→나레이션, 가사→대본, 배경→내 소재* 로 매핑.
+
+```bash
+# 이번 주 주제 뽑기(결정론적 로테이션)
+python -m shorts topics --days 7 --seed 2026-08
+
+# 대본만으로 계획 + 게시 메타 미리보기(라이브러리 불필요)
+python -m shorts plan --script examples/script.example.txt --channel examples/channel.example.yaml
+
+# 나레이션 + 내 소재 + 대본 → 세로 캡컷 초안 + 메타/자막/게시 매니페스트
+python -m shorts build \
+  --script script.txt --channel channel.yaml \
+  --narration voice.mp3 --footage-dir ./clips --name morning_routine
+```
+
+전체 파이프라인·자동화 경계·다음 단계는 **[`shorts/ROADMAP.md`](shorts/ROADMAP.md)** 참고.
+채널 브랜딩은 [`examples/channel.example.yaml`](examples/channel.example.yaml) 하나만 채우면 됩니다.
+
+---
+
 ## ✨ 특징
 
 - **여러 클립 비트 배치** — 배경 클립 여러 개를 넣으면 **비트마다 다른 클립**으로
