@@ -29,12 +29,14 @@ python -m shorts topics --days 7 --seed 2026-08
 # 대본만으로 계획 + 게시 메타 미리보기(라이브러리 불필요)
 python -m shorts plan --script examples/script.example.txt --channel examples/channel.example.yaml
 
-# 나레이션 + 내 소재 + 대본 → 세로 캡컷 초안 + 메타/자막/게시 매니페스트
+# 나레이션 + 내 소재 + 대본 → 완성 mp4 + 자막 + 게시 매니페스트 (헤드리스, 무인)
 python -m shorts build \
   --script script.txt --channel channel.yaml \
   --narration voice.mp3 --footage-dir ./clips --name morning_routine
+#  ↳ Whisper 없이: --no-align  ·  캡컷 초안도 함께: --make-draft
 ```
 
+**캡컷 없이 ffmpeg 로 완성 mp4(`*.mp4`)를 바로 렌더**합니다(굵은 한글 자막 구움).
 전체 파이프라인·자동화 경계·다음 단계는 **[`shorts/ROADMAP.md`](shorts/ROADMAP.md)** 참고.
 채널 브랜딩은 [`examples/channel.example.yaml`](examples/channel.example.yaml) 하나만 채우면 됩니다.
 

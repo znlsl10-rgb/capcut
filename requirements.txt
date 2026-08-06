@@ -20,6 +20,10 @@ faster-whisper>=1.0.0
 # 설정 파일 파싱
 PyYAML>=6.0
 
+# 동기부여 쇼츠(shorts): 헤드리스 mp4 렌더용 ffmpeg 정적 바이너리
+#   시스템에 ffmpeg 이 설치돼 있으면 없어도 됩니다(그때는 PATH 의 ffmpeg 사용).
+imageio-ffmpeg>=0.4.9
+
 # 송북(곡별 정답 가사) 엑셀 읽기
 openpyxl>=3.1.0
 

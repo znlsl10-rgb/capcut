@@ -35,9 +35,19 @@ __all__ = [
     "build_metadata",
     "pick_topics",
     "daily_plan",
+    "Caption",
+    "RenderStyle",
+    "render_short",
+    "NarrationRequest",
+    "synthesize",
+    "build_short",
+    "ShortResult",
 ]
 
 from .channel import ChannelProfile, load_channel
 from .metadata import PublishMetadata, build_metadata
+from .pipeline import ShortResult, build_short
+from .render import Caption, RenderStyle, render_short
 from .script import MotivationScript, ScriptLine, parse_script, split_captions
 from .topics import daily_plan, pick_topics
+from .voice import NarrationRequest, synthesize

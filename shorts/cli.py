@@ -122,6 +122,9 @@ def cmd_build(args: argparse.Namespace) -> int:
         max_caption_chars=args.max_caption_chars,
         whisper_model=args.whisper_model,
         clip_order=args.clip_order,
+        render=not args.no_render,
+        make_draft=args.make_draft,
+        align=not args.no_align,
         dry_run=args.dry_run,
     )
     for w in result.warnings:
@@ -130,11 +133,12 @@ def cmd_build(args: argparse.Namespace) -> int:
     _log(f"[자막] {result.srt_path}")
     _log(f"[게시] {result.manifest_path}")
     if args.dry_run:
-        _log("[dry-run] 초안 생성은 건너뜀. --dry-run 을 빼면 실제 캡컷 초안을 만듭니다.")
-    else:
-        _log(f"[초안] {result.draft_path}")
-        _log("      캡컷을 열어 초안 확인 후 세로(9:16)로 내보내고, "
-             "매니페스트의 video_path 를 채워 업로드하세요.")
+        _log("[dry-run] 렌더/초안 없이 메타/자막만 생성. --dry-run 을 빼면 실제 mp4 를 렌더합니다.")
+        return 0
+    if result.video_path:
+        _log(f"[완성] {result.video_path}  ← 이 mp4 를 틱톡에 올리면 끝")
+    if result.draft_path:
+        _log(f"[초안] {result.draft_path} (캡컷에서 손보기용)")
     return 0
 
 
@@ -181,7 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--whisper-model", dest="whisper_model", default="small", help="Whisper 모델 크기")
     b.add_argument("--clip-order", dest="clip_order", choices=["sequential", "shuffle"],
                    default="sequential", help="소재 배치 순서")
-    b.add_argument("--dry-run", action="store_true", help="초안 생성 없이 메타/자막만 생성")
+    b.add_argument("--no-render", dest="no_render", action="store_true",
+                   help="완성 mp4 렌더를 끔(캡컷 초안만 만들 때)")
+    b.add_argument("--make-draft", dest="make_draft", action="store_true",
+                   help="캡컷 초안도 함께 생성(손보기용, pyCapCut 필요)")
+    b.add_argument("--no-align", dest="no_align", action="store_true",
+                   help="Whisper 강제정렬 끄고 나레이션 길이에 비례해 자막 분배")
+    b.add_argument("--dry-run", action="store_true", help="렌더/초안 없이 메타/자막만 생성")
     b.set_defaults(func=cmd_build)
 
     return p

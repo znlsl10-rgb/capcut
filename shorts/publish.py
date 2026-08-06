@@ -44,6 +44,16 @@ def write_publish_manifest(
     yt = build_metadata(script, channel, platform="youtube")
     tt = build_metadata(script, channel, platform="tiktok")
 
+    if video_path:
+        next_step = (
+            "완성 mp4 가 준비됐습니다. higgsfield 로 업로드(media_upload) 후 "
+            "tiktok_prepare_publish → tiktok_publish 로 게시하세요(게시 직전 동의 1회 필요)."
+        )
+    else:
+        next_step = (
+            "캡컷 초안을 열어 세로(9:16)로 내보낸 뒤, 그 mp4 경로를 'video_path' 에 "
+            "채우면 업로드 스텝을 실행할 수 있습니다. (헤드리스 렌더를 켜면 이 과정이 생략됩니다)"
+        )
     manifest = {
         "status": "ready_to_export" if not video_path else "ready_to_upload",
         "channel": channel.name,
@@ -51,10 +61,7 @@ def write_publish_manifest(
         "draft_path": draft_path,
         "srt_path": srt_path,
         "video_path": video_path,
-        "_next_step": (
-            "캡컷에서 초안을 열어 세로(9:16)로 내보낸 뒤, 그 mp4 경로를 "
-            "'video_path' 에 채우면 업로드 스텝을 실행할 수 있습니다."
-        ),
+        "_next_step": next_step,
         "youtube": {
             **yt.to_dict(),
             "privacy": "public",

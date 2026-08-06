@@ -11,17 +11,21 @@
  (자동)       (반자동)      (내 목소리/TTS)   (자동, 세로)        (캡컷 1클릭)     (반자동)
 ```
 
+**선택된 방향: B(ffmpeg 헤드리스 렌더) + 틱톡 우선 + TTS 자동생성.**
+
 | 단계 | 상태 | 구현 |
 |------|------|------|
 | ① 주제 발굴·로테이션 | ✅ 완료 | `topics.py` — 결정론적 주제 뱅크 + 콘텐츠 캘린더 |
 | ② 대본 구조화(훅/본문/CTA) | ✅ 완료 | `script.py` — 파싱 + 쇼츠용 짧은 자막 분할 |
 | ②' 게시 메타(제목/설명/해시태그) | ✅ 완료 | `metadata.py` — 유튜브/틱톡 |
-| ③ 나레이션 음성 | ⛳ 다음 | 내 목소리 또는 higgsfield TTS(`generate_audio`) |
-| ④ 세로 캡컷 초안(컷+자막) | ✅ 완료 | `pipeline.py` → 기존 `build_draft` 재사용 |
-| ⑤ mp4 내보내기 | ⚠️ 수동 | 캡컷 앱에서 내보내기(공식 API 없음) — 아래 참고 |
-| ⑥ 업로드(유튜브/틱톡) | ⛳ 다음 | `publish.py` 매니페스트 → API 연결 필요 |
+| ③ 나레이션 음성(TTS) | 🔶 시임 | `voice.py` — 내 목소리 또는 higgsfield `generate_audio` |
+| ④ 헤드리스 mp4 렌더(컷+한글자막) | ✅ 완료 | `render.py` — ffmpeg, 캡컷 없이 완성 mp4 |
+| ④' 캡컷 초안(손보기용, 선택) | ✅ 완료 | `pipeline.py --make-draft` → 기존 `build_draft` |
+| ⑤ 완성 mp4 | ✅ 완료 | `build` 가 `*.mp4` 직접 출력(무인) |
+| ⑥ 틱톡 업로드 | 🔶 연결 | `publish.py` 매니페스트 → higgsfield `tiktok_publish` |
+| ⑥' 유튜브 업로드 | ⛳ 나중 | YouTube Data API v3(OAuth) — 자격증명 필요 |
 
-## 지금 바로 쓸 수 있는 것 (1차 구현)
+## 지금 바로 쓸 수 있는 것
 
 ```bash
 # 이번 주 주제 뽑기
@@ -30,42 +34,52 @@ python -m shorts topics --days 7 --seed 2026-08
 # 대본만으로 계획 + 게시 메타 미리보기(라이브러리 불필요)
 python -m shorts plan --script script.txt --channel examples/channel.example.yaml
 
-# 나레이션 + 내 소재 + 대본 → 세로 캡컷 초안 + 메타/자막/게시 매니페스트
+# 나레이션 + 내 소재 + 대본 → 완성 mp4 + 자막 + 게시 매니페스트 (헤드리스, 무인)
 python -m shorts build \
   --script script.txt --channel channel.yaml \
   --narration voice.mp3 --footage-dir ./clips --name morning_routine
+
+#  ↳ Whisper 없이 돌리려면 --no-align (나레이션 길이에 비례해 자막 분배)
+#  ↳ 캡컷 초안도 같이 뽑으려면 --make-draft
 ```
 
 산출물:
+- `*.mp4` — **완성된 세로 쇼츠**(내 소재 컷 + 굵은 한글 자막 + 나레이션). 바로 업로드 가능
 - `*.metadata.json` — 유튜브/틱톡 제목·설명·해시태그·검색태그
-- `*.srt` — 나레이션에 강제정렬된 자막
-- `*.publish.json` — 게시 매니페스트(내보낸 mp4 경로만 채우면 업로드 준비 완료)
-- 캡컷 초안 — 앱에서 열어 확인 후 내보내기
+- `*.srt` — 자막
+- `*.publish.json` — 게시 매니페스트(`status: ready_to_upload`)
+
+## 렌더러(`render.py`) 특징
+
+- 나레이션 길이에 맞춰 **자막 경계에서 컷** → 말과 화면이 함께 전환
+- 내 소재를 세로 **1080×1920 cover-crop**(가로 영상도 꽉 채움), 영상은 트림/루프
+- **굵은 한글 자막**(Noto Sans CJK KR)을 외곽선·그림자와 함께 구워 넣음(ASS)
+- ffmpeg 는 `imageio-ffmpeg` 정적 바이너리 사용 → 시스템 설치 불필요
+- 이미지 슬로우 줌(Ken Burns)은 `zoompan` 이 매우 느려 **기본 OFF**(옵션)
 
 ## 자동화 경계(솔직하게)
 
-**캡컷은 공식 내보내기 API가 없습니다.** 그래서 "초안 생성"까지는 완전 자동이지만,
-mp4 렌더링은 캡컷 앱에서 열어 **내보내기(1클릭)** 가 필요합니다. 완전 무인 렌더가
-꼭 필요하면 두 갈래가 있습니다:
-
-1. **헤드리스 렌더 경로 추가(ffmpeg/moviepy)** — 캡컷 없이 자막·컷·전환을 직접 렌더해
-   서버에서 무인 생산·업로드까지. (캡컷 편집 자유도는 포기, 자동화는 최대) → Phase 2 후보
-2. **캡컷 유지 + 로컬 자동화** — 내 PC에서 초안 열고 내보내기만 사람이/매크로가 처리.
+- **렌더는 완전 무인**입니다(캡컷 불필요). 주제→대본→TTS→렌더까지 사람 손 0.
+- **틱톡 게시**: 틱톡 정책상 **게시 직전 동의 1회**(AIGC/공개범위/미리보기 확인)가
+  필수라, 완전 무인 게시는 불가하고 "확인 게이트"가 한 번 있습니다. 그 외 업로드
+  준비(mp4→higgsfield 업로드→세션 생성)는 자동입니다.
+- **AIGC 고지**: TTS/AI 요소가 있으면 틱톡에 `is_aigc=true` 로 정직하게 고지하세요.
 
 ## 업로드 연결(⑥)
 
-- **틱톡**: higgsfield MCP `tiktok_publish` 로 자동 게시 가능(계정 연결 시).
-- **유튜브**: YouTube Data API v3(OAuth) 필요. `publish.youtube_upload()` 에 자격증명을
-  연결하세요. **자격증명은 절대 코드/깃에 커밋하지 말고 환경변수/시크릿으로만** 주입.
+- **틱톡(우선)**: `render` 로 만든 mp4 → higgsfield `media_upload` → `tiktok_prepare_publish`
+  → `tiktok_publish`. 계정은 `tiktok_accounts`/`tiktok_connect` 로 연결.
+- **유튜브(나중)**: YouTube Data API v3(OAuth). `publish.youtube_upload()` 에 자격증명 연결.
+  **자격증명은 절대 커밋 금지, 환경변수/시크릿으로만** 주입.
 
 ## 다음 단계 제안 (우선순위)
 
-1. **③ 나레이션 자동화** — higgsfield `generate_audio` 로 대본→음성 TTS, 또는 내 목소리
-   녹음 워크플로. (지금은 나레이션 파일을 직접 넣는 구조)
-2. **대본 생성 보조** — 주제 → 훅/본문/CTA 초안 생성(채널 페르소나·톤 반영). 사람이 최종 감수.
-3. **⑥ 유튜브 업로드** — API 자격증명 연결 + 매니페스트 기반 게시.
-4. **성과 루프** — apify 로 채널/경쟁 쇼츠 지표 수집 → 잘 되는 훅·주제로 다음 캘린더 보정.
-5. **(선택) 헤드리스 렌더** — 완전 무인 생산이 필요할 때.
+1. **③ TTS 실연결** — higgsfield `generate_audio`(한국어 보이스)로 대본→나레이션 자동.
+   `voice.py` 의 provider 자리에 REST 래퍼(독립 실행용)를 꽂거나, 세션에선 MCP 로 생성.
+2. **⑥ 틱톡 게시 배선** — mp4 업로드 → prepare → publish 를 한 커맨드로(`shorts publish`).
+3. **대본 생성 보조** — 주제 → 훅/본문/CTA 초안 자동 생성(페르소나·톤 반영), 사람 감수.
+4. **성과 루프** — apify 로 잘 되는 훅·주제 지표 수집 → 다음 캘린더 보정.
+5. **유튜브 업로드** — 자격증명 연결 후 매니페스트 기반 게시.
 
 ## 노션 브랜딩 반영
 
