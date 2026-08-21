@@ -39,6 +39,25 @@ def _hex_to_rgb(color: str) -> Tuple[float, float, float]:
     return (r, g, b)
 
 
+def _clamp_y(y: float) -> float:
+    """자막 세로 위치를 화면 안(-0.9~0.9)으로 제한."""
+    return round(min(0.9, max(-0.9, y)), 3)
+
+
+def _subtitle_base_y(config: AgentConfig) -> float:
+    """자막 기준 세로 위치. 벤치마크 값(extra['subtitle_y'])이 있으면 사용.
+
+    없으면 기존 기본 하단(-0.72).
+    """
+    y = config.extra.get("subtitle_y")
+    if y is None:
+        return -0.72
+    try:
+        return _clamp_y(float(y))
+    except (TypeError, ValueError):
+        return -0.72
+
+
 def _plan_points(
     config: AgentConfig,
     beatmap: BeatMap,
@@ -358,19 +377,22 @@ def build_draft(
     # 어떤 배경에서도 읽히도록 검은 테두리.
     border = TextBorder(alpha=1.0, color=(0.0, 0.0, 0.0), width=18.0)
 
+    # 자막 세로 위치: 벤치마크(참고 영상)에서 추정한 값이 있으면 그 높이에 맞춤.
+    base_y = _subtitle_base_y(config)
+
     if bilingual:
         # 영어 원문(위) + 한글 번역(아래) 두 트랙으로 자연스럽게.
         en_style = TextStyle(size=preset.text_size, bold=True,
                              color=_hex_to_rgb(preset.text_color), align=1, auto_wrapping=True)
         ko_style = TextStyle(size=round(preset.text_size * 0.72, 2), bold=True,
                              color=_hex_to_rgb(preset.secondary_color), align=1, auto_wrapping=True)
-        en_clip = ClipSettings(transform_y=-0.60)  # 위
-        ko_clip = ClipSettings(transform_y=-0.76)  # 아래
+        en_clip = ClipSettings(transform_y=_clamp_y(base_y + 0.08))  # 위
+        ko_clip = ClipSettings(transform_y=_clamp_y(base_y - 0.08))  # 아래
         script.add_track(TrackType.text, "lyrics_ko")
     else:
         en_style = TextStyle(size=preset.text_size, bold=True,
                              color=_hex_to_rgb(preset.text_color), align=1, auto_wrapping=True)
-        en_clip = ClipSettings(transform_y=-0.72)
+        en_clip = ClipSettings(transform_y=base_y)
 
     for seg in lyrics:
         dur_us = _us(max(seg.end - seg.start, 0.2))

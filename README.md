@@ -18,6 +18,9 @@
 
 ## ✨ 특징
 
+- **참고 영상 벤치마킹** — 잘 만든 영상을 하나 주면 **컷 편집 속도 · 음악 템포 ·
+  자막 위치 · 화면 비율**을 분석해, 내 로컬 클립으로 **유사한 느낌**의 영상을
+  자동 편집합니다. (아래 "참고 영상 벤치마킹" 섹션)
 - **여러 클립 비트 배치** — 배경 클립 여러 개를 넣으면 **비트마다 다른 클립**으로
   전환되는 몽타주 생성(`sequential` 순환 / `shuffle` 무작위). 컷은 항상 감지된
   비트 시각에 놓여 **박자에 정확히** 맞습니다.
@@ -127,6 +130,135 @@ python -m capcut_agent run --config config.yaml --dry-run
 
 ```bash
 python -m capcut_agent styles
+```
+
+---
+
+## 🔬 참고 영상 벤치마킹 (내 영상으로 유사하게)
+
+잘 만든 **참고 영상**을 하나 주면, 그 영상의 **편집 레시피**(컷 편집 속도 ·
+음악 템포 · 자막 위치 · 화면 비율)를 분석해 **내 로컬 클립**으로 유사한 느낌의
+영상을 자동 편집합니다. 벤치마킹하는 3요소는 요청하신 **자막 · 음악 · 컷편집**
+그대로입니다.
+
+동작 순서:
+
+1. **분석** — `ffmpeg` 장면 전환 감지로 컷 리듬(분당 컷 수·컷 길이)을 재고,
+   오디오 템포(BPM)를 측정하며, 프레임을 샘플링해 자막 밴드의 세로 위치를
+   추정합니다. 해상도/비율도 읽습니다.
+2. **벤치마크** — 분석값으로 **스타일 프리셋 · 전환 간격 · 소재 모드 · 출력
+   해상도 · 자막 높이**를 자동 결정합니다.
+3. **적용** — 내 클립 + 음악(내 곡 또는 참고 영상 오디오)으로 캡컷 초안을
+   만듭니다. 컷은 내 음악의 비트에 놓이되 **참고 영상만큼 촘촘하게/성글게** 끊고,
+   자막은 참고 영상과 **같은 높이**에 놓입니다.
+
+### 분석만 (편집 레시피 미리보기)
+
+```bash
+python -m capcut_agent analyze --reference ref.mp4 --out profile.json
+```
+
+출력 예:
+
+```
+🔬 참고 영상 분석 — ref.mp4
+   포맷    1080x1920 · 세로 · 30fps · 28.4s  · 오디오 있음
+   음악    ~140 BPM
+   컷편집  46컷 · 분당 97.2컷 · 컷 길이 중앙값 0.58s (최단 0.20s)
+   자막    하단 밴드 (세로 0.86 · 대비 3.4x)
+   ⇒ 벤치마크 스타일 'energetic' · 전환간격 ~0.49s · 소재모드 beat
+```
+
+### 유튜브 링크로 벤치마킹 + 대본 자막
+
+`--reference` 에 **유튜브/웹 링크**를 넣으면 영상을 내려받아(yt-dlp) 분석하고,
+`--script` 로 **내 대본 텍스트**를 주면 그 대본을 **비트에 맞춰 자막**으로 얹습니다.
+즉 "유튜브 링크 + 내 폴더의 영상/이미지 + 대본" → 유사한 내 영상이 됩니다.
+
+```bash
+python -m capcut_agent benchmark \
+  --reference "https://youtu.be/VIDEO_ID" \
+  --background-dir ./myclips \
+  --audio mysong.mp3 \
+  --script script.txt
+```
+
+- `--script` 를 주면 Whisper 받아쓰기 대신 대본을 사용합니다(정확·빠름).
+- 링크 다운로드에는 **yt-dlp** 가 필요합니다: `pip install yt-dlp`.
+
+### 벤치마킹해서 내 영상 만들기
+
+```bash
+# 내 곡을 사운드트랙으로
+python -m capcut_agent benchmark \
+  --reference ref.mp4 \
+  --background-dir ./myclips \
+  --audio mysong.mp3 \
+  --draft-folder "~/Movies/CapCut/User Data/Projects/com.lveditor.draft"
+
+# 참고 영상의 오디오를 그대로 음악으로 사용
+python -m capcut_agent benchmark \
+  --reference ref.mp4 --background-dir ./myclips --use-reference-audio
+
+# 스타일만 직접 지정(나머지는 참고 영상에서 자동)
+python -m capcut_agent benchmark --reference ref.mp4 \
+  --background-dir ./myclips --audio mysong.mp3 --style goosebump --dry-run
+```
+
+자막은 사운드트랙을 Whisper 로 받아써 채웁니다. 정답 가사(`--songbook`/`--song`,
+`--lyrics-file`), 영한 이중 자막(`--lyrics-ko`/`--translate`) 옵션은 `run` 과
+동일하게 쓸 수 있습니다.
+
+> 분석에는 **ffmpeg/ffprobe** 가 필요합니다(장면 전환 감지·오디오/프레임 추출).
+> 템포·자막 추정은 부가 정보라 실패해도 나머지는 그대로 진행합니다
+> (`--no-music` / `--no-subtitles` 로 생략해 빠르게 돌릴 수 있어요).
+
+---
+
+## 🤖 AI 소재 "최소 제작" (적게 만들어 슬로우로 채우기)
+
+배경 footage 를 **AI(예: 힉스필드)로 최소 개수만 생성**하고, 남는 길이는
+**슬로우(커버리지 모드)로 늘려** 곡 전체를 채우는 전략입니다. 동일한 차·배경·
+분위기의 짧은 클립 몇 개만 있으면, 비트 컷·엑셀 자막이 얹혀 뮤직비디오가 됩니다.
+
+**필요한 최소 클립 수**는 곡 길이·클립 길이·슬로우 한도로 계산합니다:
+
+```bash
+python -m capcut_agent genplan --song-duration 100 --clip-len 5 --slow-floor 0.5
+# → 클립 1개가 10.0s 를 덮음 → 최소 10개 생성 → 0.50x(2배 슬로우)로 곡을 채움
+```
+
+계산된 개수만큼 AI 클립을 만들어 한 폴더에 모은 뒤, 그 폴더로 초안을 만듭니다
+(커버리지 모드가 자동으로 슬로우를 적용합니다):
+
+```bash
+python -m capcut_agent run \
+  --audio mysong.mp3 --background-dir ./ai_clips \
+  --footage-mode coverage --slow-floor 0.5 \
+  --songbook Mindtrack.xlsx --song "곡명"
+```
+
+> AI 클립을 만들 때는 **한 영상 안에서 동일한 차·배경·분위기**가 유지되도록,
+> 기준 이미지 1장을 만든 뒤 그 이미지를 **참조**로 걸어 카메라 움직임만 바꿔
+> 여러 컷을 뽑는 방식을 권장합니다(identity/reference). 그러면 컷이 바뀌어도
+> 같은 차·같은 도시가 유지됩니다.
+
+### 촬영 리스트(shot recipe) — 통일감 + 다양성
+
+`capcut_agent/shotlist.py` 는 **기준 이미지 1장**으로 만들 다양한 컷의 프롬프트
+세트를 정해진 규칙으로 만들어 줍니다. 규칙(코드로 고정):
+
+- 모든 컷은 **기준 이미지와 동일한 스타일·분위기·화질**로 통일(참조 접미사 자동 부착).
+- **중간중간 1인칭 시점(POV)** 을 섞고, 1인칭엔 **자연스러운 손떨림**을 넣음.
+- 피사체가 **차량**이면 **운전자 1인칭 시점**을 반드시 포함.
+- 시네마틱 컷(establishing·orbit·트래킹·클로즈업·크레인)과 1인칭 컷을 번갈아 배치.
+
+```python
+from capcut_agent.shotlist import build_shots, summarize_shots
+shots = build_shots("matte black sports car in a neon city at night",
+                    is_vehicle=True, count=6, min_pov=2)
+print(summarize_shots(shots))   # 각 컷 이름/유형
+# shots[i]["prompt"] 를 이미지-투-비디오 생성기(예: 힉스필드 Seedance)에 그대로 전달
 ```
 
 ---
