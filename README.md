@@ -196,6 +196,24 @@ python -m capcut_agent styles
 
 ---
 
+## 🧵 threadscout — 해외 스레드 분석 → 쿠팡 파트너스 글 (부가 도구)
+
+해외 Threads에서 **노출·댓글·공유가 잘 나온 글**을 찾아, 그 글이 미는 제품이 **쿠팡에 있는지 확인**하고,
+**쿠팡 파트너스 링크가 붙은 한국어 스레드 초안**까지 만들어 주는 도구입니다.
+
+```bash
+export APIFY_TOKEN=apify_api_...            # Threads 수집용
+export COUPANG_ACCESS_KEY=... COUPANG_SECRET_KEY=...   # (선택) 파트너스 링크 생성
+
+python -m threadscout.web                    # 웹 UI → http://127.0.0.1:8010
+python -m threadscout scan -k "air fryer" --top 20
+python -m threadscout coupang "에어프라이어"
+```
+
+자세한 사용법은 [`threadscout/README.md`](threadscout/README.md) 참고.
+
+---
+
 ## 🧪 테스트
 
 ```bash

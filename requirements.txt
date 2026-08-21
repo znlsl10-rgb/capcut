@@ -28,3 +28,9 @@ fastapi>=0.110.0
 uvicorn>=0.27.0
 python-multipart>=0.0.9   # 파일 업로드
 
+
+# threadscout (해외 스레드 분석 → 쿠팡 파트너스 글)
+#   수집/분석 엔진은 표준 라이브러리만 사용합니다(Apify·쿠팡 API 모두 urllib).
+#   웹 UI 는 위의 fastapi/uvicorn 을 그대로 씁니다.
+deep-translator>=1.11.0   # 선택: 해외 글 자동 번역(없으면 원문 유지)
+#   openpyxl 은 위 송북 의존성으로 이미 포함 — 벤치마킹 엑셀 보드 출력에 사용

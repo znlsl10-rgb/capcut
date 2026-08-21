@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>threadscout — 해외 스레드 분석 → 쿠팡 파트너스 글</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0f1115; --card:#171a21; --fg:#e8eaed; --muted:#9aa0a6;
+          --line:#262b34; --acc:#4f8cff; --ok:#2ecc71; --no:#ff6b6b; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1d22; --muted:#5f6368; --line:#e3e6ea; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--fg);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans KR",sans-serif; }
+  .wrap { max-width:1200px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  input, select { width:100%; padding:8px 10px; border-radius:8px; border:1px solid var(--line);
+                  background:transparent; color:var(--fg); font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { padding:10px 18px; border-radius:8px; border:none; background:var(--acc); color:#fff;
+           font-size:14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); font-weight:500; padding:6px 12px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .chip { background:rgba(127,127,127,.14); border-radius:14px; padding:3px 10px; font-size:12px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { padding:8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  td.num, th.num { text-align:right; white-space:nowrap; }
+  .scroll { overflow-x:auto; }
+  .tw { max-width:380px; color:var(--muted); }
+  a { color:var(--acc); text-decoration:none; } a:hover { text-decoration:underline; }
+  .ok { color:var(--ok); } .no { color:var(--no); }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  .tab { padding:6px 14px; border-radius:8px; background:transparent; border:1px solid var(--line);
+         cursor:pointer; font-size:13px; }
+  .tab.on { background:var(--acc); border-color:var(--acc); color:#fff; }
+  pre { background:rgba(127,127,127,.09); border-radius:10px; padding:12px; white-space:pre-wrap;
+        word-break:break-word; font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .cards { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:120px; }
+  .stat b { display:block; font-size:18px; } .stat span { color:var(--muted); font-size:12px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .warn { color:#f5a623; font-size:12px; }
+  .hide { display:none; }
+  #log { max-height:150px; overflow:auto; font:12px/1.5 ui-monospace,monospace; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>threadscout</h1>
+  <div class="sub">해외 스레드에서 <b>노출·댓글·공유</b> 잘 나온 글 찾기 → 쿠팡 판매 확인 → 한국어 글 초안</div>
+
+  <div class="card">
+    <div class="grid">
+      <div style="grid-column:1/-1">
+        <label>검색 키워드 (쉼표로 구분 · 영어 권장)</label>
+        <input id="keywords" placeholder="air fryer, amazon finds, kitchen gadgets">
+        <div class="chips" id="presets"></div>
+      </div>
+      <div><label>키워드당 수집 수</label><input id="max_posts" type="number" value="50"></div>
+      <div><label>최근 N일</label><input id="days" type="number" value="30"></div>
+      <div><label>상세 분석 상위</label><input id="top" type="number" value="20"></div>
+      <div><label>최소 조회수</label><input id="min_views" type="number" value="0"></div>
+      <div><label>최소 댓글</label><input id="min_replies" type="number" value="0"></div>
+      <div><label>팔로워 상한 (비우면 제한없음)</label><input id="max_followers" type="number" placeholder=""></div>
+      <div><label>정렬</label><select id="sort"><option value="top">인기(top)</option><option value="recent">최신(recent)</option></select></div>
+      <div><label>쿠팡 매칭</label><select id="coupang">
+        <option value="auto">자동</option><option value="partners">파트너스 API</option>
+        <option value="apify">Apify</option><option value="off">끄기</option></select></div>
+      <div><label>초안 개수</label><input id="drafts" type="number" value="5"></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="run">분석 시작</button>
+      <button class="ghost" id="save" disabled>리포트 저장</button>
+      <span class="muted" id="env"></span>
+    </div>
+    <div id="log" class="hide" style="margin-top:10px"></div>
+  </div>
+
+  <div id="result" class="hide">
+    <div class="cards" id="stats"></div>
+    <div class="tabs">
+      <div class="tab on" data-tab="posts">상위 글</div>
+      <div class="tab" data-tab="patterns">공통 패턴</div>
+      <div class="tab" data-tab="coupang">쿠팡 매칭</div>
+      <div class="tab" data-tab="drafts">한국어 초안</div>
+    </div>
+    <div class="card" id="pane"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = (v) => Number(v || 0).toLocaleString();
+let DATA = null, TAB = "posts";
+
+const PRESETS = ["skincare routine","skin barrier","sunscreen","retinol","hair loss","supplements",
+  "gut health","sleep routine","amazon finds","air fryer","desk setup","gym essentials","pet hacks"];
+$("presets").innerHTML = PRESETS.map(p => `<span class="chip">${p}</span>`).join("");
+$("presets").onclick = (e) => {
+  if (!e.target.classList.contains("chip")) return;
+  const cur = $("keywords").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (!cur.includes(e.target.textContent)) cur.push(e.target.textContent);
+  $("keywords").value = cur.join(", ");
+};
+
+fetch("/api/health").then(r => r.json()).then(h => {
+  $("env").innerHTML =
+    `APIFY ${h.apify_token ? "✅" : "❌"} · 파트너스 ${h.coupang_partners ? "✅" : "❌"} · 번역기 ${h.translator ? "✅" : "❌"}`;
+});
+
+$("run").onclick = async () => {
+  const keywords = $("keywords").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (!keywords.length) { alert("검색 키워드를 입력하세요."); return; }
+  $("run").disabled = true; $("run").textContent = "분석 중…";
+  $("log").classList.remove("hide"); $("log").textContent = "수집 중… (Apify 액터 실행에 1~3분 걸립니다)";
+  try {
+    const res = await fetch("/api/scan", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        keywords,
+        max_posts: +$("max_posts").value, days: +$("days").value || null, top: +$("top").value,
+        min_views: +$("min_views").value, min_replies: +$("min_replies").value,
+        max_followers: $("max_followers").value ? +$("max_followers").value : null,
+        sort: $("sort").value, coupang: $("coupang").value, drafts: +$("drafts").value,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || "실패");
+    DATA = body;
+    $("log").textContent = (body.logs || []).join("\n");
+    $("save").disabled = false;
+    render();
+  } catch (err) {
+    $("log").textContent = "오류: " + err.message;
+  } finally {
+    $("run").disabled = false; $("run").textContent = "분석 시작";
+  }
+};
+
+$("save").onclick = async () => {
+  const res = await fetch("/api/report", {method: "POST"});
+  const body = await res.json();
+  alert(res.ok ? "저장됨:\n" + body.saved.join("\n") : (body.detail || "실패"));
+};
+
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("on"));
+  t.classList.add("on"); TAB = t.dataset.tab; renderPane();
+});
+
+function render() {
+  $("result").classList.remove("hide");
+  const s = DATA.summary || {};
+  const matched = (DATA.matches || []).filter(m => m.found).length;
+  $("stats").innerHTML = [
+    [num(s.count), "분석 글"], [num(s.median_views), "중앙 노출"],
+    [(s.avg_reply_rate_pct ?? 0) + "%", "평균 댓글율"], [(s.avg_share_rate_pct ?? 0) + "%", "평균 공유율"],
+    [num(matched), "쿠팡 매칭"], [num((DATA.drafts || []).length), "생성 초안"],
+  ].map(([v, k]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
+  renderPane();
+}
+
+function table(headers, rows, numCols = []) {
+  const th = headers.map((h, i) => `<th class="${numCols.includes(i) ? "num" : ""}">${esc(h)}</th>`).join("");
+  const tb = rows.map(r => "<tr>" + r.map((c, i) =>
+    `<td class="${numCols.includes(i) ? "num" : ""}">${c}</td>`).join("") + "</tr>").join("");
+  return `<div class="scroll"><table><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table></div>`;
+}
+
+function renderPane() {
+  if (!DATA) return;
+  const pane = $("pane");
+  if (TAB === "posts") {
+    const rows = (DATA.posts || []).map((p, i) => {
+      const c = p.coupang || {}, prod = c.product || {};
+      const cou = !c.keyword ? "-" : (c.found
+        ? `<span class="ok">✅ ${esc((prod.name || "").slice(0, 18))}</span>` : `<span class="no">❌</span>`);
+      return [String(i + 1), String(p.score), esc("@" + (p.username || "")), num(p.effective_views),
+        num(p.likes), num(p.replies), num((p.reposts || 0) + (p.quotes || 0) + (p.shares || 0)),
+        p.reply_rate_pct + "%", p.share_rate_pct + "%", cou,
+        `<div class="tw">${esc((p.text || "").slice(0, 200))}</div>`,
+        `<a href="${esc(p.url)}" target="_blank" rel="noopener">원문</a>`];
+    });
+    pane.innerHTML = table(["#","점수","계정","노출","좋아요","댓글","공유","댓글율","공유율","쿠팡","내용","링크"],
+      rows, [0,1,3,4,5,6,7,8]);
+  } else if (TAB === "patterns") {
+    const a = DATA.analysis || {};
+    const grp = (title, key) => {
+      const g = a[key] || []; if (!g.length) return "";
+      return `<h3>${title}</h3>` + table(["구분","글수","평균점수","배수","중앙노출","댓글율","공유율"],
+        g.map(x => [esc(x.name), String(x.count), String(x.avg_score), "×" + x.lift,
+          num(x.median_views), x.avg_reply_rate_pct + "%", x.avg_share_rate_pct + "%"]), [1,2,3,4,5,6]);
+    };
+    const kw = (a.keywords || []).length
+      ? "<h3>상위권에서 유독 많이 나온 단어</h3>" + table(["단어","상위","하위","lift","평균점수"],
+          a.keywords.map(k => [esc(k.term), String(k.top_count), String(k.rest_count), "×" + k.lift,
+            String(k.avg_score)]), [1,2,3,4]) : "";
+    const au = (a.authors || []).length
+      ? "<h3>벤치마킹할 계정</h3>" + table(["계정","글수","평균점수","중앙노출","팔로워","최고글"],
+          a.authors.map(x => [esc("@" + x.username), String(x.posts), String(x.avg_score),
+            num(x.median_views), x.followers ? num(x.followers) : "-",
+            `<a href="${esc(x.best_url)}" target="_blank" rel="noopener">보기</a>`]), [1,2,3,4]) : "";
+    pane.innerHTML = grp("훅(첫 줄) 유형별","hooks") + grp("글 길이별","lengths")
+      + grp("사진/영상 유무","media") + grp("발행 시간대(KST)","hours") + kw + au;
+  } else if (TAB === "coupang") {
+    const ms = DATA.matches || [];
+    pane.innerHTML = ms.length ? table(["검색어","상태","상품","가격","수수료율(추정)","건당 수익(추정)","링크"],
+      ms.map(m => {
+        const p = m.product || {};
+        return [esc(m.keyword), m.found ? '<span class="ok">판매중</span>' : '<span class="no">없음</span>',
+          esc((p.name || "").slice(0, 45)), p.price ? num(p.price) + "원" : "-",
+          (p.commission_rate_pct ?? "-") + "%", p.commission_per_sale ? num(p.commission_per_sale) + "원" : "-",
+          p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">상품</a>` : esc(m.note || "-")];
+      }), [3,4,5]) : '<div class="muted">쿠팡 매칭 결과가 없습니다.</div>';
+  } else {
+    const ds = DATA.drafts || [];
+    pane.innerHTML = ds.length ? ds.map((d, i) => `
+      <div style="margin-bottom:18px">
+        <div class="row" style="justify-content:space-between">
+          <b>초안 ${i + 1}</b>
+          <span>
+            <span class="muted">${d.char_count}자 · </span>
+            <a href="${esc(d.source_url)}" target="_blank" rel="noopener">원문</a>
+            <button class="ghost" data-copy="${i}">복사</button>
+          </span>
+        </div>
+        ${(d.warnings || []).map(w => `<div class="warn">⚠️ ${esc(w)}</div>`).join("")}
+        <pre>${esc(d.text)}</pre>
+      </div>`).join("") : '<div class="muted">초안이 없습니다.</div>';
+    pane.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => {
+      navigator.clipboard.writeText(DATA.drafts[+b.dataset.copy].text);
+      b.textContent = "복사됨";
+      setTimeout(() => (b.textContent = "복사"), 1200);
+    });
+  }
+  const notes = (DATA.notes || []).map(n => `<div class="muted">· ${esc(n)}</div>`).join("");
+  if (notes) pane.innerHTML += `<div style="margin-top:14px">${notes}</div>`;
+}
+</script>
+</body>
+</html>
