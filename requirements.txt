@@ -23,6 +23,9 @@ PyYAML>=6.0
 # 송북(곡별 정답 가사) 엑셀 읽기
 openpyxl>=3.1.0
 
+# 유튜브/웹 링크로 참고 영상 다운로드 (benchmark --reference <URL>)
+yt-dlp>=2024.1.0
+
 # 로컬 웹앱 (talkcut: 토킹 영상 편집기)
 fastapi>=0.110.0
 uvicorn>=0.27.0

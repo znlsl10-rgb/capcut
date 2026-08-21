@@ -74,6 +74,7 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
         "whisper_model": args.whisper_model,
         "lyrics_srt": args.lyrics_srt,
         "output_srt": args.output_srt,
+        "script_file": getattr(args, "script", None),
     }
     for key, val in overrides.items():
         if val is not None:
@@ -122,6 +123,16 @@ def _resolve_official_lines(config: AgentConfig):
 
 def _get_lyrics(config: AgentConfig, beatmap, official) -> list:
     from .lyrics import clamp_segments_to_duration, correct_lyrics, transcribe
+
+    # 0) 대본(스크립트)이 있으면 그걸 자막으로 사용(비트에 맞춰 배치).
+    if config.script_file:
+        from .script_subs import script_to_segments
+
+        with open(config.script_file, "r", encoding="utf-8") as f:
+            text = f.read()
+        segments = script_to_segments(text, beatmap.duration, beats=beatmap.beats)
+        _log(f"[대본] {config.script_file} → 자막 {len(segments)}줄(비트에 맞춰 배치)")
+        return clamp_segments_to_duration(segments, beatmap.duration)
 
     if official:
         # 정답 가사 + Whisper 타이밍 = 강제 정렬(교정).
@@ -275,11 +286,18 @@ def cmd_detect(args: argparse.Namespace) -> int:
 def cmd_analyze(args: argparse.Namespace) -> int:
     """참고 영상을 분석해 편집 레시피(프로파일)만 출력/저장합니다."""
     from .benchmark import analyze_reference, summarize_profile
+    from .fetch import is_url, resolve_reference
 
-    _log(f"[벤치마크] 참고 영상 분석 중: {args.reference}")
+    reference = args.reference
+    if is_url(reference):
+        _log(f"[벤치마크] 링크에서 참고 영상 다운로드 중: {reference}")
+        reference = resolve_reference(reference, out_dir=".")
+        _log(f"            → {reference}")
+
+    _log(f"[벤치마크] 참고 영상 분석 중: {reference}")
     _log("            (장면컷 감지 + 오디오 템포 + 자막 밴드 추정 — 시간이 걸릴 수 있어요)")
     profile = analyze_reference(
-        args.reference,
+        reference,
         detect_subs=not args.no_subtitles,
         measure_music=not args.no_music,
         scene_threshold=args.scene_threshold,
@@ -302,16 +320,24 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         profile_to_overrides,
         summarize_profile,
     )
+    from .fetch import is_url, resolve_reference
 
     if not (args.background or args.background_dir):
         raise SystemExit("내 소재가 필요합니다: --background <파일...> 또는 --background-dir <폴더>")
     if not args.audio and not args.use_reference_audio:
         raise SystemExit("음악이 필요합니다: --audio <곡파일> 또는 --use-reference-audio")
 
+    # 0) 참고 영상이 링크면 먼저 다운로드해 로컬 파일로.
+    reference = args.reference
+    if is_url(reference):
+        _log(f"[벤치마크] 링크에서 참고 영상 다운로드 중: {reference}")
+        reference = resolve_reference(reference, out_dir=".")
+        _log(f"            → {reference}")
+
     # 1) 참고 영상 분석
-    _log(f"[벤치마크] 참고 영상 분석 중: {args.reference}")
+    _log(f"[벤치마크] 참고 영상 분석 중: {reference}")
     profile = analyze_reference(
-        args.reference,
+        reference,
         detect_subs=not args.no_subtitles,
         measure_music=not args.no_music,
         scene_threshold=args.scene_threshold,
@@ -329,7 +355,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
             raise SystemExit("참고 영상에 오디오가 없어 --use-reference-audio 를 쓸 수 없습니다.")
         audio_path = os.path.abspath(f"{name}.reference_audio.wav")
         _log(f"[벤치마크] 참고 영상 오디오 추출 → {audio_path}")
-        extract_reference_audio(args.reference, audio_path)
+        extract_reference_audio(reference, audio_path)
     else:
         audio_path = args.audio
 
@@ -367,6 +393,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         "whisper_model": args.whisper_model,
         "lyrics_srt": args.lyrics_srt,
         "output_srt": args.output_srt,
+        "script_file": args.script,
     }
     for key, val in scalar.items():
         if val is not None:
@@ -449,12 +476,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--whisper-model", dest="whisper_model", help="Whisper 모델 크기")
     run.add_argument("--lyrics-srt", dest="lyrics_srt", help="준비된 SRT 사용(받아쓰기 생략)")
     run.add_argument("--output-srt", dest="output_srt", help="받아쓴 가사 SRT 저장 경로")
+    run.add_argument("--script", help="대본 텍스트 파일(주면 Whisper 대신 대본을 비트에 맞춰 자막으로)")
     run.add_argument("--dry-run", action="store_true", help="초안 생성 없이 계획만 출력")
     run.set_defaults(func=cmd_run)
 
     # --- analyze: 참고 영상 분석만 -------------------------------------
     analyze = sub.add_parser("analyze", help="참고 영상 분석(편집 레시피 출력)")
-    analyze.add_argument("--reference", required=True, help="분석할 참고 영상 파일")
+    analyze.add_argument("--reference", required=True, help="분석할 참고 영상 파일 또는 유튜브/웹 링크")
     analyze.add_argument("--out", help="분석 결과 프로파일 JSON 저장 경로")
     analyze.add_argument("--no-subtitles", dest="no_subtitles", action="store_true",
                          help="자막 밴드 추정 생략(빠름)")
@@ -469,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
         "benchmark",
         help="참고 영상을 벤치마킹해 내 로컬 클립으로 유사한 영상 초안 생성",
     )
-    bench.add_argument("--reference", required=True, help="벤치마킹할 참고 영상 파일")
+    bench.add_argument("--reference", required=True, help="벤치마킹할 참고 영상 파일 또는 유튜브/웹 링크")
     bench.add_argument("--background", nargs="+", help="내 영상/이미지 파일(여러 개 가능)")
     bench.add_argument("--background-dir", dest="background_dir", help="내 클립들이 담긴 폴더")
     bench.add_argument("--audio", help="사운드트랙(내 곡). 미지정 시 --use-reference-audio 필요")
@@ -498,6 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--whisper-model", dest="whisper_model", help="Whisper 모델 크기")
     bench.add_argument("--lyrics-srt", dest="lyrics_srt", help="준비된 SRT 사용(받아쓰기 생략)")
     bench.add_argument("--output-srt", dest="output_srt", help="받아쓴 가사 SRT 저장 경로")
+    bench.add_argument("--script", help="대본 텍스트 파일(주면 Whisper 대신 대본을 비트에 맞춰 자막으로)")
     bench.add_argument("--dry-run", action="store_true", help="초안 생성 없이 계획만 출력")
     bench.set_defaults(func=cmd_benchmark)
 

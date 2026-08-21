@@ -95,6 +95,9 @@ class AgentConfig:
     lyrics_srt: Optional[str] = None
     output_srt: Optional[str] = None
 
+    # 대본(스크립트) 기반 자막: 주어지면 Whisper/정답가사 대신 이 대본을 자막으로 사용.
+    script_file: Optional[str] = None
+
     extra: Dict[str, Any] = field(default_factory=dict)
 
     _MEDIA_EXTS = (
@@ -168,6 +171,8 @@ class AgentConfig:
             raise FileNotFoundError(f"송북(엑셀) 파일을 찾을 수 없습니다: {self.songbook}")
         if self.lyrics_file and not os.path.isfile(self.lyrics_file):
             raise FileNotFoundError(f"가사 파일을 찾을 수 없습니다: {self.lyrics_file}")
+        if self.script_file and not os.path.isfile(self.script_file):
+            raise FileNotFoundError(f"대본 파일을 찾을 수 없습니다: {self.script_file}")
         if self.lyrics_ko_file and not os.path.isfile(self.lyrics_ko_file):
             raise FileNotFoundError(f"한글 가사 파일을 찾을 수 없습니다: {self.lyrics_ko_file}")
 

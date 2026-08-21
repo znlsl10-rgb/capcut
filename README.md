@@ -169,6 +169,23 @@ python -m capcut_agent analyze --reference ref.mp4 --out profile.json
    ⇒ 벤치마크 스타일 'energetic' · 전환간격 ~0.49s · 소재모드 beat
 ```
 
+### 유튜브 링크로 벤치마킹 + 대본 자막
+
+`--reference` 에 **유튜브/웹 링크**를 넣으면 영상을 내려받아(yt-dlp) 분석하고,
+`--script` 로 **내 대본 텍스트**를 주면 그 대본을 **비트에 맞춰 자막**으로 얹습니다.
+즉 "유튜브 링크 + 내 폴더의 영상/이미지 + 대본" → 유사한 내 영상이 됩니다.
+
+```bash
+python -m capcut_agent benchmark \
+  --reference "https://youtu.be/VIDEO_ID" \
+  --background-dir ./myclips \
+  --audio mysong.mp3 \
+  --script script.txt
+```
+
+- `--script` 를 주면 Whisper 받아쓰기 대신 대본을 사용합니다(정확·빠름).
+- 링크 다운로드에는 **yt-dlp** 가 필요합니다: `pip install yt-dlp`.
+
 ### 벤치마킹해서 내 영상 만들기
 
 ```bash
