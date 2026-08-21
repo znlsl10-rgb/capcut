@@ -27,6 +27,7 @@ import sys
 import time
 from typing import List, Optional
 
+from .benchmark import write_xlsx
 from .collect import CollectError, get_token
 from .coupang import CoupangError, PartnersClient, pick_best, search_via_apify
 from .pipeline import PipelineOptions, run_pipeline
@@ -83,6 +84,7 @@ def _add_scan_args(p: argparse.ArgumentParser) -> None:
     out.add_argument("--out-dir", default="output", help="리포트 저장 폴더 (기본 output/)")
     out.add_argument("--name", default=None, help="리포트 파일 이름(확장자 제외)")
     out.add_argument("--no-files", action="store_true", help="파일 저장 없이 화면 출력만")
+    out.add_argument("--no-xlsx", action="store_true", help="엑셀 벤치마킹 보드 저장 건너뛰기")
 
 
 def _options_from_args(args: argparse.Namespace) -> PipelineOptions:
@@ -146,6 +148,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
             write_csv(result, base + ".csv"),
             write_json(result, base + ".json"),
         ]
+        if not args.no_xlsx:
+            try:
+                paths.append(write_xlsx(result, base + ".xlsx"))
+            except RuntimeError as exc:  # openpyxl 미설치
+                _log(f"엑셀 보드 건너뜀: {exc}")
         _log("\n저장:")
         for path in paths:
             _log(f"  {path}")

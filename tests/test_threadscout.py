@@ -336,3 +336,39 @@ def test_reports_render(tmp_path):
     assert "<html" in html and "노출·댓글·공유 상위 글" in html
     csv_path = write_csv(result, tmp_path / "out.csv")
     assert csv_path.exists() and "score" in csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
+
+
+# --- 벤치마킹 엑셀 -------------------------------------------------------
+def test_hook_label_classification():
+    from threadscout.benchmark import hook_label
+
+    assert hook_label("Unpopular opinion: air fryers are overrated") == "논쟁형"
+    assert hook_label("5 things I wish I knew") == "리스트형"
+    assert hook_label("How to fix your sleep") == "방법형"
+    assert hook_label("Is this worth it?") == "질문형"
+    assert hook_label("I bought a yoga mat") == "스토리형"
+
+
+def test_takeaways_mentions_reply_rate():
+    from threadscout.benchmark import takeaways
+
+    note = takeaways({"reply_rate_pct": 1.5, "text": "x" * 300})
+    assert "댓글율" in note
+
+
+def test_write_xlsx_creates_all_sheets(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    from threadscout.benchmark import write_xlsx
+
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps([make_raw(post_id=str(i), post_url=f"u{i}",
+                                             view_count=10000 * (i + 1)) for i in range(6)]),
+                        encoding="utf-8")
+    result = run_pipeline(PipelineOptions(from_json=str(raw_path), coupang="off",
+                                          translate=False, top=5, draft_limit=2))
+    out = write_xlsx(result, tmp_path / "board.xlsx")
+    wb = openpyxl.load_workbook(out)
+    assert wb.sheetnames == ["1_벤치마킹", "2_훅패턴", "3_키워드", "4_계정", "5_쿠팡매칭", "6_초안"]
+    board = wb["1_벤치마킹"]
+    assert board["A3"].value == "#"          # 헤더는 3행
+    assert board.max_row >= 8                # 상위 5건 + 헤더 + 평균행

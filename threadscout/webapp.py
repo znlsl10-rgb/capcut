@@ -71,6 +71,7 @@ def create_app():  # noqa: C901 — 라우트 정의라 길이만 김
     from .collect import CollectError
     from .coupang import CoupangError, PartnersClient, pick_best, search_via_apify
     from .pipeline import PipelineOptions, run_pipeline
+    from .benchmark import write_xlsx
     from .report import write_csv, write_html, write_json, write_markdown
     from .score import Filters, ScoreWeights
 
@@ -171,6 +172,10 @@ def create_app():  # noqa: C901 — 라우트 정의라 길이만 김
             write_csv(_LAST_RESULT, base.with_suffix(".csv")),
             write_json(_LAST_RESULT, base.with_suffix(".json")),
         ]
+        try:
+            paths.append(write_xlsx(_LAST_RESULT, base.with_suffix(".xlsx")))
+        except RuntimeError:  # openpyxl 미설치 — 나머지 포맷만 저장
+            pass
         return {"saved": [str(p) for p in paths]}
 
     return app

@@ -15,6 +15,7 @@
 ```bash
 pip install -r requirements.txt          # fastapi/uvicorn (웹 UI용)
 pip install deep-translator              # 선택: 자동 번역 (없으면 원문 유지)
+pip install openpyxl                     # 선택: 벤치마킹 엑셀 보드 출력
 ```
 
 수집·분석 엔진 자체는 **표준 라이브러리만** 사용한다(추가 설치 불필요).
@@ -69,7 +70,9 @@ python -m threadscout goldbox --limit 20
 python -m threadscout terms
 ```
 
-리포트는 `output/threadscout_<시각>.{md,html,csv,json}` 로 저장된다.
+리포트는 `output/threadscout_<시각>.{md,html,csv,json,xlsx}` 로 저장된다.
+`.xlsx` 는 **벤치마킹 보드**로, 시트 6개(벤치마킹 / 훅패턴 / 키워드 / 계정 / 쿠팡매칭 / 초안)로 정리된다.
+(`pip install openpyxl` 필요 · 생략하려면 `--no-xlsx`)
 
 ---
 
@@ -132,6 +135,19 @@ python -m threadscout terms
 > 번역문 그대로 올리면 중복 콘텐츠로 노출이 깎일 수 있고, 원문 작성자의 저작물을 그대로 옮기는 문제도 생긴다.
 > 아이디어·구조(훅/포맷/각도)를 참고하는 용도로 쓰는 것이 안전하다.
 
+## 7-1. 벤치마킹 엑셀 보드
+
+`scan` 을 돌리면 리포트와 함께 `.xlsx` 가 나온다. 시트 6개:
+
+| 시트 | 내용 |
+|---|---|
+| 1_벤치마킹 | 상위 글 한 줄씩 — 점수·노출·댓글율·공유율·**훅 유형**·**따라할 포인트**·원문 링크 |
+| 2_훅패턴 | 훅/길이/미디어/시간대별 성과와 배수(lift) — lift 1.0 초과 유형을 먼저 따라하면 된다 |
+| 3_키워드 | 상위권에만 나오는 단어·해시태그 |
+| 4_계정 | 이 주제에서 꾸준히 먹히는 계정과 대표 글 |
+| 5_쿠팡매칭 | 검색어별 판매 여부·가격·예상 수수료 |
+| 6_초안 | 업로드용 한국어 초안 전문 |
+
 ## 8. 지켜야 할 것
 
 - 쿠팡 파트너스 링크가 들어간 글에는 **대가성 문구 고지 필수** (표시광고법·파트너스 이용약관)
@@ -152,6 +168,7 @@ python -m threadscout terms
 | `draft.py` | 번역 + 한국어 스레드 초안 생성 |
 | `pipeline.py` | 전체 파이프라인 (CLI·웹 공용) |
 | `report.py` | MD / HTML / CSV / JSON 리포트 |
+| `benchmark.py` | 벤치마킹 엑셀 보드(6시트) — 훅 유형·따라할 포인트 자동 표기 |
 | `cli.py` / `web.py` / `webapp.py` | CLI, 로컬 웹 서버, FastAPI 앱 |
 
 ## 10. 테스트
