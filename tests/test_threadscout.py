@@ -372,3 +372,37 @@ def test_write_xlsx_creates_all_sheets(tmp_path):
     board = wb["1_벤치마킹"]
     assert board["A3"].value == "#"          # 헤더는 3행
     assert board.max_row >= 8                # 상위 5건 + 헤더 + 평균행
+
+
+# --- 키워드 프리셋 -------------------------------------------------------
+def test_preset_keywords_merges_and_dedups():
+    from threadscout.presets import preset_keywords, preset_names
+
+    assert "beauty" in preset_names()
+    merged = preset_keywords(["beauty", "beauty", "fitness"])
+    assert "skincare routine" in merged
+    assert "creatine" in merged
+    assert len(merged) == len(set(merged))
+
+
+def test_preset_unknown_name_is_ignored():
+    from threadscout.presets import preset_keywords
+
+    assert preset_keywords(["nope"]) == []
+
+
+def test_cli_scan_combines_preset_and_keywords():
+    from threadscout.cli import build_parser, _options_from_args
+
+    args = build_parser().parse_args(
+        ["scan", "--preset", "beauty", "-k", "air fryer", "--coupang", "off"])
+    options = _options_from_args(args)
+    assert "skincare routine" in options.keywords
+    assert options.keywords[-1] == "air fryer"
+
+
+def test_beauty_lexicon_covers_common_terms():
+    from threadscout.product import PRODUCT_LEXICON
+
+    for term in ("niacinamide", "sunscreen", "retinol", "biotin", "melatonin", "gua sha"):
+        assert term in PRODUCT_LEXICON

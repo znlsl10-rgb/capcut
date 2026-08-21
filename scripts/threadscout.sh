@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # 해외 스레드 분석기(threadscout) — 원클릭 실행
 #
-#   ./scripts/threadscout.sh web                          # 웹 UI (http://127.0.0.1:8010)
-#   ./scripts/threadscout.sh scan -k "air fryer" --top 20 # CLI 분석
-#   ./scripts/threadscout.sh coupang "에어프라이어"        # 쿠팡 판매 확인
+#   ./scripts/threadscout.sh web                                  # 웹 UI (http://127.0.0.1:8010)
+#   ./scripts/threadscout.sh scan --preset beauty --top 30        # 뷰티/헬스 주제 분석
+#   ./scripts/threadscout.sh scan -k "air fryer" --top 20         # 키워드 직접 지정
+#   ./scripts/threadscout.sh coupang "선크림"                      # 쿠팡 판매 확인
+#   ./scripts/threadscout.sh presets                              # 키워드 프리셋 목록
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,7 +19,7 @@ source .venv/bin/activate
 
 echo "[setup] 의존성 확인…"
 python -m pip install -q --upgrade pip
-python -m pip install -q fastapi uvicorn deep-translator
+python -m pip install -q fastapi uvicorn openpyxl deep-translator
 
 : "${APIFY_TOKEN:=}"
 if [ -z "$APIFY_TOKEN" ]; then

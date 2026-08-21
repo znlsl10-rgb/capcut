@@ -3,6 +3,8 @@
 사용 예:
     # 1) 해외 스레드에서 '노출 잘 되고 댓글/공유 많은' 글 찾기 + 쿠팡 매칭 + 한국어 초안
     export APIFY_TOKEN=apify_api_...
+    python -m threadscout scan --preset beauty --max-posts 40 --days 45 \
+        --top 30 --save-raw output/raw.json
     python -m threadscout scan --keyword "air fryer" --keyword "amazon finds" \
         --max-posts 80 --days 30 --top 20 --save-raw output/raw.json
 
@@ -31,6 +33,7 @@ from .benchmark import write_xlsx
 from .collect import CollectError, get_token
 from .coupang import CoupangError, PartnersClient, pick_best, search_via_apify
 from .pipeline import PipelineOptions, run_pipeline
+from .presets import PRESETS, preset_keywords, preset_names
 from .product import lexicon_terms
 from .report import to_markdown, write_csv, write_html, write_json, write_markdown
 from .score import Filters, ScoreWeights
@@ -44,6 +47,8 @@ def _add_scan_args(p: argparse.ArgumentParser) -> None:
     src = p.add_argument_group("수집")
     src.add_argument("--keyword", "-k", action="append", default=[],
                      help="검색 키워드(여러 번 지정 가능). 예: -k 'air fryer' -k 'kitchen gadget'")
+    src.add_argument("--preset", action="append", default=[], choices=preset_names(),
+                     help="주제별 키워드 묶음 (여러 번 지정 가능). -k 와 함께 쓰면 합쳐짐")
     src.add_argument("--from-json", dest="from_json", default=None,
                      help="저장해둔 원시 JSON 으로 재분석(수집 건너뜀)")
     src.add_argument("--max-posts", type=int, default=50, help="키워드당 최대 수집 수 (기본 50)")
@@ -102,8 +107,12 @@ def _options_from_args(args: argparse.Namespace) -> PipelineOptions:
         exposure=args.w_exposure, share_rate=args.w_share, reply_rate=args.w_reply,
         reach=args.w_reach, velocity=args.w_velocity,
     )
+    keywords = preset_keywords(args.preset) + [k for k in args.keyword if k]
+    seen: set[str] = set()
+    keywords = [k for k in keywords if not (k in seen or seen.add(k))]
+
     kwargs = dict(
-        keywords=tuple(args.keyword),
+        keywords=tuple(keywords),
         from_json=args.from_json,
         max_posts=args.max_posts,
         sort=args.sort,
@@ -126,8 +135,10 @@ def _options_from_args(args: argparse.Namespace) -> PipelineOptions:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    if not args.keyword and not args.from_json:
-        _log("검색 키워드가 필요합니다:  -k 'air fryer'   (또는 --from-json 으로 재분석)")
+    if not args.keyword and not args.preset and not args.from_json:
+        _log("검색 키워드가 필요합니다:  --preset beauty  또는  -k 'air fryer'"
+             "   (또는 --from-json 으로 재분석)")
+        _log(f"사용 가능한 프리셋: {', '.join(preset_names())}")
         return 2
 
     result = run_pipeline(_options_from_args(args), log=_log)
@@ -226,6 +237,13 @@ def cmd_goldbox(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_presets(_: argparse.Namespace) -> int:
+    """주제별 키워드 프리셋 목록."""
+    for name in preset_names():
+        print(f"{name:9s} {', '.join(PRESETS[name])}")
+    return 0
+
+
 def cmd_terms(_: argparse.Namespace) -> int:
     """제품 사전에 등록된 쿠팡 검색어 목록."""
     for term in lexicon_terms():
@@ -262,6 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     goldbox.add_argument("--limit", type=int, default=20)
     goldbox.add_argument("--sub-id", default="threads")
     goldbox.set_defaults(func=cmd_goldbox)
+
+    presets = sub.add_parser("presets", help="주제별 키워드 프리셋 목록")
+    presets.set_defaults(func=cmd_presets)
 
     terms = sub.add_parser("terms", help="제품 사전(쿠팡 검색어) 목록")
     terms.set_defaults(func=cmd_terms)

@@ -37,7 +37,29 @@ export COUPANG_SECRET_KEY=xxx
 - Apify 토큰: https://console.apify.com/settings/integrations
 - 쿠팡 파트너스 Open API 키: 파트너스 → 내 정보 → Open API (승인 필요)
 
-## 3. 실행
+## 3. 5분 퀵스타트 — 뷰티/헬스 주제로 벤치마킹 뽑기
+
+```bash
+# macOS / Linux
+export APIFY_TOKEN=apify_api_xxxxx
+./scripts/threadscout.sh scan --preset beauty --max-posts 40 --days 45 --top 30 \
+    --save-raw output/raw_beauty.json
+```
+
+```bat
+REM Windows
+set APIFY_TOKEN=apify_api_xxxxx
+scripts\threadscout.bat scan --preset beauty --max-posts 40 --days 45 --top 30 --save-raw output\raw_beauty.json
+```
+
+- 예상 비용: 8개 키워드 × 40건 ≈ 320건 × $0.0025 ≈ **$0.8** (Apify 무료 $5/월 안에서 6회쯤 가능)
+- 결과: `output/threadscout_<시각>.xlsx` ← 벤치마킹 보드 (시트 6개)
+- 한 번 수집한 뒤에는 `--from-json output/raw_beauty.json` 으로 몇 번이든 무료 재분석
+
+프리셋 목록은 `python -m threadscout presets` — beauty / kitchen / desk / fitness / pet / baby.
+`--preset beauty -k "cortisol"` 처럼 키워드를 섞어 쓸 수도 있다.
+
+## 3-1. 실행
 
 ### 웹 UI (추천)
 
