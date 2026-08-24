@@ -243,3 +243,184 @@ if __name__ == "__main__":
               f"검출점 {result['defect_count']:2d}, 클러스터 {contour['n_clusters']}, 중심 {ctr_str}")
     print("\n  단일 seed라 5mm는 우연히 놓칠 수 있음 (10 seed 검출률 9/10).")
     print("  2mm 이하는 노이즈 한계 → 식 ⑥ 참고.")
+
+
+# =====================================================================
+# [v5 추가] 면내(in-plane) 좌표 기반 영역 평활도
+# =====================================================================
+# detect_defects_grid() 는 조사기 좌표계의 X-Y 로 격자 비닝한다. 면을 정면
+# 으로 겨누던 기존 파이프라인에서는 타당했으나, 세그멘테이션 후에는 한
+# 장의 사진 안에 정면인 벽과 비스듬히 들어온 바닥이 함께 있다. 비스듬한
+# 면을 X-Y 로 비닝하면 셀이 찌그러져 (a) 국소 median 이 서로 다른 높이를
+# 섞고 (b) 요철 크기·위치가 왜곡된다.
+#
+# → 영역 평면의 접선 기저 (e1, e2) 로 좌표변환한 뒤 면내 (u,v) 로 비닝한다.
+#   잔차는 평면 법선 방향 성분 w 그 자체이므로, 시야각과 무관하게
+#   KCS 의 "3m 직선자에 의한 처짐량"과 같은 의미를 갖는다.
+#
+# 평면 적합은 fit_plane_tls_ransac (방향 무관)을 쓴다. Z=aX+bY+c 회귀는
+# 광축과 나란한 면을 표현하지 못한다.
+
+import importlib.util as _ilu5, os as _os5
+
+def _load_eq2():
+    spec = _ilu5.spec_from_file_location(
+        "eq2_plane_fit",
+        _os5.path.join(_os5.path.dirname(_os5.path.abspath(__file__)),
+                       "eq2_plane_fit.py"))
+    m = _ilu5.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+_EQ2M = _load_eq2()
+
+
+def _smooth_once(uvw, grid_n, window, min_cell_points):
+    u, v, w = uvw[:, 0], uvw[:, 1], uvw[:, 2]
+    umin, umax, vmin, vmax = u.min(), u.max(), v.min(), v.max()
+    cu = (umax - umin) / grid_n
+    cv = (vmax - vmin) / grid_n
+    out, counts = [], []
+    for gu in np.linspace(umin, umax, grid_n):
+        du = np.abs(u - gu) < cu * window
+        if not du.any():
+            continue
+        for gv in np.linspace(vmin, vmax, grid_n):
+            m = du & (np.abs(v - gv) < cv * window)
+            c = int(m.sum())
+            if c >= min_cell_points:
+                out.append([gu, gv, np.median(w[m])])
+                counts.append(c)
+    if not out:
+        return np.empty((0, 3)), (cu, cv), 0
+    return np.array(out), (cu, cv), int(np.median(counts))
+
+
+def _grid_smooth_uv(uvw, grid_n=24, window="auto", min_cell_points=3,
+                    target_cell_points=8, window_candidates=(1, 1.5, 2, 3)):
+    """
+    면내 (u,v) 격자에서 w 의 국소 median 을 취해 노이즈를 억제한다.
+
+    window="auto" 의 근거
+    ---------------------
+    평활 윈도우는 노이즈 억제와 공간 분해능의 맞교환이다. 넓게 잡으면
+    노이즈는 줄지만 요철 깊이가 뭉개진다(실측: window=2 에서 GT 6mm
+    융기가 2.85mm 로 축소).
+
+    필요한 만큼만 넓히면 된다. 점당 깊이 노이즈 σ_Z 는 median 필터를
+    거치며 대략 1.25·σ_Z/√k (k = 셀 내 점 수) 로 줄어든다. 즉 k 가
+    target_cell_points 를 넘어서면 그 이상 넓혀도 이득은 √k 로 미미한
+    반면 분해능 손실은 선형이다.
+    → 셀 내 점 수 중앙값이 target_cell_points 이상이 되는 **가장 좁은**
+      윈도우를 고른다. v4 의 고정값 window=2 를 대체한다.
+
+    Returns
+    -------
+    smoothed : (M,3) [u, v, w_median]
+    cell     : (cu, cv) 격자 셀 크기 (m) — 클러스터 eps 산정에 쓰인다
+    used     : dict 진단 정보 (window, median_cell_points)
+    """
+    u, v = uvw[:, 0], uvw[:, 1]
+    if u.max() - u.min() < 1e-9 or v.max() - v.min() < 1e-9:
+        return np.empty((0, 3)), (0.0, 0.0), {"window": None,
+                                              "median_cell_points": 0}
+    if window != "auto":
+        sm, cell, med = _smooth_once(uvw, grid_n, float(window),
+                                     min_cell_points)
+        return sm, cell, {"window": float(window), "median_cell_points": med}
+
+    best = None
+    for wnd in window_candidates:
+        sm, cell, med = _smooth_once(uvw, grid_n, float(wnd), min_cell_points)
+        best = (sm, cell, {"window": float(wnd), "median_cell_points": med})
+        if len(sm) >= 6 and med >= target_cell_points:
+            break
+    return best
+
+
+def detect_defects_region(points_3d, plane=None, threshold_mm=1.5,
+                          grid_n=24, window="auto", plane_threshold_m=0.004,
+                          cluster_eps_mm=30, cluster_min_samples=4):
+    """
+    한 영역(벽면/바닥면)의 평활도를 면내 좌표계에서 산출한다.
+
+    Parameters
+    ----------
+    points_3d : (N,3) — 해당 영역의 3D 점 (조사기 좌표계, m)
+    plane : (a,b,c,d) or None
+        영역 평면. None이면 내부에서 TLS RANSAC 으로 적합한다.
+    threshold_mm : float — 요철 판정 임계 (평활 후 잔차)
+    plane_threshold_m : float — 평면 RANSAC inlier 임계 (요철을 outlier로 배제)
+
+    Returns
+    -------
+    dict — detect_defects_grid() 와 같은 키에 면내 좌표 정보를 추가
+        plane, residuals_mm, defect_points_uv, defect_residuals_mm,
+        defect_count, overall_max_dev_mm, raw_max_dev_mm, rms_dev_mm,
+        is_pass, verified_clusters, n_smoothed, area_m2
+    """
+    pts = np.asarray(points_3d, dtype=float)
+    empty = {'plane': plane, 'residuals_mm': np.empty(0),
+             'defect_points_uv': np.empty((0, 2)),
+             'defect_residuals_mm': np.empty(0), 'defect_count': 0,
+             'overall_max_dev_mm': 0.0, 'raw_max_dev_mm': 0.0,
+             'rms_dev_mm': 0.0, 'is_pass': True, 'verified_clusters': [],
+             'n_smoothed': 0, 'area_m2': 0.0,
+             'reject_reason': None}
+    if len(pts) < 12:
+        empty['reject_reason'] = f"점 부족 ({len(pts)} < 12)"
+        return empty
+
+    if plane is None:
+        plane, _ = _EQ2M.fit_plane_tls_ransac(pts, threshold=plane_threshold_m)
+
+    # 면내 좌표 (u, v) + 법선 방향 이탈 w
+    uvw, basis, origin = _EQ2M.project_to_plane_frame(pts, plane)
+
+    smoothed, cell, smooth_info = _grid_smooth_uv(uvw, grid_n=grid_n,
+                                                  window=window)
+    if len(smoothed) < 6:
+        empty['plane'] = plane
+        empty['reject_reason'] = f"평활 격자 셀 부족 ({len(smoothed)})"
+        return empty
+
+    res_mm = smoothed[:, 2] * 1000.0
+    # 평활 격자에서 다시 한 번 기준면을 잡아 전역 기울기 잔여분을 제거
+    res_mm = res_mm - np.median(res_mm)
+
+    cand = np.abs(res_mm) > threshold_mm
+    cand_uv = smoothed[cand, :2]
+    cand_res = res_mm[cand]
+
+    # 클러스터 검증은 기존 cluster_defects 를 면내 좌표로 재사용.
+    # eps 는 반드시 격자 셀 간격에 맞춰야 한다. 고정 30mm 를 쓰면 면내
+    # 셀 간격(수십~100mm)보다 작아 인접 요철 셀이 절대 이어지지 않고,
+    # 클러스터가 0개가 되어 진짜 요철을 통째로 놓친다.
+    eps_m = max(cluster_eps_mm / 1000.0, 1.6 * max(cell[0], cell[1]))
+    cand_xyz = np.column_stack([cand_uv, np.zeros(len(cand_uv))])
+    clusters = cluster_defects(cand_xyz, eps_mm=eps_m * 1000.0,
+                               min_samples=cluster_min_samples,
+                               residuals_mm=cand_res)
+
+    if clusters:
+        vidx = np.concatenate([c['point_idx'] for c in clusters])
+        d_uv, d_res = cand_uv[vidx], cand_res[vidx]
+        overall_max, is_pass = float(np.max(np.abs(d_res))), False
+    else:
+        d_uv, d_res = np.empty((0, 2)), np.empty(0)
+        overall_max, is_pass = 0.0, True
+
+    return {'plane': plane, 'basis': basis, 'origin': origin,
+            'uvw': uvw, 'smoothed_uvw': smoothed,
+            'residuals_mm': res_mm,
+            'defect_points_uv': d_uv, 'defect_residuals_mm': d_res,
+            'defect_count': int(len(d_uv)),
+            'overall_max_dev_mm': overall_max,
+            'raw_max_dev_mm': float(np.max(np.abs(res_mm))),
+            'rms_dev_mm': float(np.sqrt(np.mean(res_mm ** 2))),
+            'is_pass': is_pass, 'verified_clusters': clusters,
+            'n_smoothed': int(len(smoothed)),
+            'smooth_info': smooth_info, 'cell_m': [float(cell[0]), float(cell[1])],
+            'cluster_eps_mm': round(eps_m * 1000.0, 1),
+            'area_m2': float((uvw[:, 0].max() - uvw[:, 0].min()) *
+                             (uvw[:, 1].max() - uvw[:, 1].min())),
+            'reject_reason': None}
