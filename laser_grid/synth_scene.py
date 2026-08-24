@@ -288,8 +288,21 @@ def build_scene(seed=2026, sigma_u_px=SIGMA_U_PX, label_map_stride=2):
     rgb_off = (label_map[..., None] * np.array([60, 40, 30], np.uint8)) \
         .astype(np.uint8)
 
+    # 카메라 자세행렬 (inspection.py 규약: 열 = [right, down, forward]).
+    # 장비를 아래로 θ_d 숙인 자세이며, eq3.gravity_in_laser_frame 없이
+    # 이 행렬만으로도 같은 ĝ 가 나와야 한다(두 경로 교차검증).
+    td = np.radians(DEVICE_PITCH_DEG)
+    view_w = np.array([0.0, np.cos(td), -np.sin(td)])
+    right_w = _unit(np.cross(view_w, np.array([0.0, 0.0, 1.0])))
+    down_w = _unit(np.cross(view_w, right_w))
+    R_world_cam = np.column_stack([right_w, down_w, view_w])
+
+    line_angles = {f"V{i}": {"fixed": "alpha", "angle_rad": float(a)}
+                   for i, a in enumerate(alphas)}
+
     return {"lines_pixels": lines_pixels, "lines_xyz": lines_xyz,
             "point_class": point_class,
+            "line_angles": line_angles, "R_world_cam": R_world_cam,
             "label_map": label_map, "id_to_semantic": CLASS_IDS,
             "rgb_off": rgb_off, "camera_params": dict(CAMERA_PARAMS),
             "g_hat": geo["g"], "geometry": geo,

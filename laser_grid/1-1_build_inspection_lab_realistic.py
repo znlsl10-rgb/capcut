@@ -183,7 +183,8 @@ def textured_material(stage, path):
 # ---------------------------------------------------------------------------
 # 솔리드 박스 (clutter/backing/column 용)
 # ---------------------------------------------------------------------------
-def add_box(stage, path, size, translate, rotate_xyz, material, inspn=(0, 0, 1)):
+def add_box(stage, path, size, translate, rotate_xyz, material,
+            inspn=(0, 0, 1), semantic=None):
     sx, sy, sz = size
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     pts = [(-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
@@ -204,6 +205,8 @@ def add_box(stage, path, size, translate, rotate_xyz, material, inspn=(0, 0, 1))
     xf.AddTranslateOp().Set(Gf.Vec3d(*translate))
     xf.AddRotateXYZOp().Set(Gf.Vec3f(*rotate_xyz))
     UsdShade.MaterialBindingAPI(m).Bind(material)
+    if semantic:
+        add_semantics(m.GetPrim(), semantic)
     M = np.array(UsdGeom.Imageable(m).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
     n = np.array(inspn, float) @ M[:3, :3]
     return [round(float(v), 6) for v in (n / np.linalg.norm(n))]
@@ -213,7 +216,7 @@ def add_box(stage, path, size, translate, rotate_xyz, material, inspn=(0, 0, 1))
 # 테셀레이션 검측면 (signal_field + 방해요소, UV 포함, 텍스처)
 # ---------------------------------------------------------------------------
 def add_textured_surface(stage, path, width, height, signal_field, detail_field,
-                         translate, rotate_xyz, material):
+                         translate, rotate_xyz, material, semantic=None):
     nx = int(round(width / RES)) + 1
     ny = int(round(height / RES)) + 1
     xs, ys = np.linspace(0, width, nx), np.linspace(0, height, ny)
@@ -241,6 +244,8 @@ def add_textured_surface(stage, path, width, height, signal_field, detail_field,
     xf.AddTranslateOp().Set(Gf.Vec3d(*translate))
     xf.AddRotateXYZOp().Set(Gf.Vec3f(*rotate_xyz))
     UsdShade.MaterialBindingAPI(m).Bind(material)
+    if semantic:
+        add_semantics(m.GetPrim(), semantic)
     M = np.array(UsdGeom.Imageable(m).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
     n = np.array([0, 0, 1.0]) @ M[:3, :3]
     return [round(float(v), 6) for v in (n / np.linalg.norm(n))], (nx, ny)
@@ -253,14 +258,113 @@ def add_anchor(stage, path, t, r):
     return {"translate": list(t), "rotate_xyz_deg": list(r)}
 
 
-def add_rebar(stage, path, base, h=0.4, r=0.008, tilt=8):
+# ---------------------------------------------------------------------------
+# 시맨틱 라벨 — 정답 세그멘테이션 마스크의 출처
+# ---------------------------------------------------------------------------
+# Isaac Replicator 의 semantic_segmentation 어노테이터는 prim 에 붙은
+# Semantics 스키마를 읽어 화소별 클래스 마스크를 그대로 내준다. 즉
+# 세그멘테이션 정답을 사람이 라벨링할 필요 없이 씬에서 공짜로 얻는다.
+# 이 정답이 있어야 최종 측정오차를 "검측식 / 선검출 / 세그멘테이션"
+# 세 몫으로 분해할 수 있다(오차 분해의 기준선).
+#
+# 라벨 이름은 C_영역분할.ISAAC_SEMANTIC_LUT 의 키와 맞춰야 한다.
+try:
+    from pxr import Semantics as _PxrSemantics
+    _HAS_SEMANTICS_API = True
+except ImportError:                       # Isaac 밖(usd-core 단독)에서는 없음
+    _PxrSemantics = None
+    _HAS_SEMANTICS_API = False
+
+
+def add_semantics(prim, class_name):
+    """
+    prim 에 semantic class 라벨을 붙인다.
+
+    Isaac 의 Semantics 스키마가 있으면 그것을 쓰고, 없으면 같은 이름의
+    속성을 직접 기록한다. 어노테이터가 조회하는 속성명이 동일하므로
+    Isaac 밖에서 만든 USD 도 Isaac 안에서 그대로 읽힌다.
+    """
+    if prim is None or not prim.IsValid():
+        return None
+    if _HAS_SEMANTICS_API:
+        sem = _PxrSemantics.SemanticsAPI.Apply(prim, "Semantics")
+        sem.CreateSemanticTypeAttr().Set("class")
+        sem.CreateSemanticDataAttr().Set(class_name)
+        return prim
+    prim.CreateAttribute("semantic:Semantics:params:semanticType",
+                         Sdf.ValueTypeNames.Token).Set("class")
+    prim.CreateAttribute("semantic:Semantics:params:semanticData",
+                         Sdf.ValueTypeNames.Token).Set(class_name)
+    # 어노테이터는 적용된 API 스키마 목록도 함께 본다. 스키마가 등록되지
+    # 않은 환경(usd-core 단독)에서도 목록만 기록해 두면, Isaac 안에서
+    # 열었을 때 정상적인 SemanticsAPI prim 으로 인식된다.
+    try:
+        existing = prim.GetMetadata("apiSchemas")
+        names = list(existing.GetAddedOrExplicitItems()) if existing else []
+        if "SemanticsAPI:Semantics" not in names:
+            names.append("SemanticsAPI:Semantics")
+        prim.SetMetadata("apiSchemas", Sdf.TokenListOp.CreateExplicit(names))
+    except Exception:
+        pass
+    return prim
+
+
+def add_shoring(stage, path, base, material, height=2.6, radius=0.0243,
+                tilt_deg=(0.0, 0.0), semantic="shoring"):
+    """
+    동바리(파이프서포트) 1본. Ø48.6mm 강관 규격.
+
+    tilt_deg : (tilt_x, tilt_y) 연직에서 기운 각. 검측 정답이 된다.
+
+    Returns
+    -------
+    dict — 정답값 {world_axis, verticality_deg, height_m, radius_m}
+    """
+    c = UsdGeom.Cylinder.Define(stage, path)
+    c.CreateHeightAttr(height)
+    c.CreateRadiusAttr(radius)
+    c.CreateAxisAttr("Z")
+    c.CreateExtentAttr([Gf.Vec3f(-radius, -radius, -height / 2),
+                        Gf.Vec3f(radius, radius, height / 2)])
+    xf = UsdGeom.Xformable(c)
+    xf.AddTranslateOp().Set(Gf.Vec3d(base[0], base[1], base[2] + height / 2))
+    xf.AddRotateXYZOp().Set(Gf.Vec3f(tilt_deg[0], tilt_deg[1], 0.0))
+    UsdShade.MaterialBindingAPI(c).Bind(material)
+    add_semantics(c.GetPrim(), semantic)
+
+    M = np.array(UsdGeom.Imageable(c).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()))
+    axis = np.array([0.0, 0.0, 1.0]) @ M[:3, :3]
+    axis = axis / np.linalg.norm(axis)
+    vert = float(np.degrees(np.arccos(min(1.0, abs(float(axis[2]))))))
+    return {"world_axis": [round(float(v), 6) for v in axis],
+            "verticality_deg": round(vert, 4),
+            "height_m": height, "radius_m": radius,
+            "base_xyz": [float(v) for v in base]}
+
+
+def add_rebar(stage, path, base, h=0.4, r=0.008, tilt=8, material=None,
+              semantic="rebar"):
+    """철근 1본. 동바리와 같은 선형 부재이나 지름이 훨씬 작다(Ø16mm 급)."""
     c = UsdGeom.Cylinder.Define(stage, path)
     c.CreateHeightAttr(h)
     c.CreateRadiusAttr(r)
     c.CreateAxisAttr("Z")
+    c.CreateExtentAttr([Gf.Vec3f(-r, -r, -h / 2), Gf.Vec3f(r, r, h / 2)])
     xf = UsdGeom.Xformable(c)
     xf.AddTranslateOp().Set(Gf.Vec3d(*base))
     xf.AddRotateXYZOp().Set(Gf.Vec3f(tilt, 0, 0))
+    if material is not None:
+        UsdShade.MaterialBindingAPI(c).Bind(material)
+    add_semantics(c.GetPrim(), semantic)
+    M = np.array(UsdGeom.Imageable(c).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()))
+    axis = np.array([0.0, 0.0, 1.0]) @ M[:3, :3]
+    axis = axis / np.linalg.norm(axis)
+    return {"world_axis": [round(float(v), 6) for v in axis],
+            "verticality_deg": round(float(np.degrees(np.arccos(
+                min(1.0, abs(float(axis[2])))))), 4),
+            "height_m": h, "radius_m": r}
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +421,10 @@ def main():
         detail_field=lambda U, V: concrete_detail(U, V, seed=11, seam_spacing=99,
                                                   seam_depth=0, micro=0.0008,
                                                   tie_spacing=99, tie_depth=0),
-        translate=(0, 0, 0), rotate_xyz=(HORIZ, 0, 0), material=tex)
+        translate=(0, 0, 0), rotate_xyz=(HORIZ, 0, 0), material=tex,
+        semantic="floor")
     add_box(stage, "/World/StationA/FloorSlab", (5.0, 5.0, 0.15),
-            (2.5, 2.5, -0.075), (HORIZ, 0, 0), solid)
+            (2.5, 2.5, -0.075), (HORIZ, 0, 0), solid, semantic="floor")
     A["surfaces"]["Floor"] = {"role": "horizontal_reference", "signal_tilt_deg": HORIZ,
                               "world_normal": fn,
                               "nuisance": {"micro_mm": 0.8}}
@@ -333,9 +438,10 @@ def main():
                                                   seam_depth=0.002, micro=0.0007,
                                                   tie_spacing=0.9, tie_depth=0.004,
                                                   crack=crack),
-        translate=(0, 0, 0), rotate_xyz=(90 + VBACK, 0, 0), material=tex)
+        translate=(0, 0, 0), rotate_xyz=(90 + VBACK, 0, 0), material=tex,
+        semantic="wall")
     add_box(stage, "/World/StationA/WallBackSlab", (5.0, 0.2, 3.0),
-            (2.5, 0.11, 1.5), (VBACK, 0, 0), solid)
+            (2.5, 0.11, 1.5), (VBACK, 0, 0), solid, semantic="wall")
     A["surfaces"]["WallBack"] = {"role": "vertical_reference", "signal_tilt_deg": VBACK,
                                  "world_normal": wn,
                                  "nuisance": {"seam_spacing_m": 0.6, "seam_depth_mm": 2.0,
@@ -386,9 +492,10 @@ def main():
         detail_field=lambda U, V: concrete_detail(U, V, seed=31, seam_spacing=0.6,
                                                   seam_depth=0.0015, micro=0.0006,
                                                   tie_spacing=1.2, tie_depth=0.003),
-        translate=(BX, 4.0, 0.2), rotate_xyz=(90, 0, 0), material=tex)
+        translate=(BX, 4.0, 0.2), rotate_xyz=(90, 0, 0), material=tex,
+        semantic="panel")
     add_box(stage, "/World/StationB/Backing", (PW + 0.3, 0.15, PH + 0.3),
-            (BX + PW / 2, 4.1, 0.2 + PH / 2), (0, 0, 0), solid)
+            (BX + PW / 2, 4.1, 0.2 + PH / 2), (0, 0, 0), solid, semantic="panel")
     gt["stations"]["StationB"] = {
         "role": "flatness", "panel_size_m": [PW, PH], "world_normal": pn, "baseline_m": 0.5,
         "signal_defects_mm": [{"label": d["label"], "local_center_m": list(d["center"]),
@@ -397,6 +504,68 @@ def main():
                      "tie_depth_mm": 3.0},
         "camera_anchor": add_anchor(stage, "/World/StationB/CamAnchor",
                                     (BX + PW / 2, 3.5, 0.2 + PH / 2), (0, 0, 0))}
+
+    # ===== Station C : 혼합 장면 (벽 + 바닥 + 동바리 + 철근) =====
+    # 세그멘테이션 기반 검측의 대상 장면. StationA 는 넓고 평탄한 면 하나만
+    # 보도록 일부러 기둥·철근을 뺐지만, 현장 사진 한 장에는 부재가 섞여
+    # 들어온다. 영역별 검측을 검증하려면 그 장면 자체가 필요하다.
+    CX0, HORIZ_C, VBACK_C = 20.0, 0.4, 0.7
+    C = {"role": "mixed_wall_floor_shoring_rebar", "surfaces": {}, "members": {}}
+
+    cfn, _ = add_textured_surface(
+        stage, "/World/StationC/FloorTop", 5.0, 5.0,
+        signal_field=None,
+        detail_field=lambda U, V: concrete_detail(U, V, seed=41, seam_spacing=99,
+                                                  seam_depth=0, micro=0.0008,
+                                                  tie_spacing=99, tie_depth=0),
+        translate=(CX0, 0, 0), rotate_xyz=(HORIZ_C, 0, 0), material=tex,
+        semantic="floor")
+    add_box(stage, "/World/StationC/FloorSlab", (5.0, 5.0, 0.15),
+            (CX0 + 2.5, 2.5, -0.075), (HORIZ_C, 0, 0), solid, semantic="floor")
+    C["surfaces"]["Floor"] = {"role": "horizontal_reference",
+                              "signal_tilt_deg": HORIZ_C, "world_normal": cfn}
+
+    cwn, _ = add_textured_surface(
+        stage, "/World/StationC/WallFace", 5.0, 3.0,
+        signal_field=None,
+        detail_field=lambda U, V: concrete_detail(U, V, seed=43, seam_spacing=0.6,
+                                                  seam_depth=0.002, micro=0.0007,
+                                                  tie_spacing=0.9, tie_depth=0.004),
+        translate=(CX0, 0, 0), rotate_xyz=(90 + VBACK_C, 0, 0), material=tex,
+        semantic="wall")
+    add_box(stage, "/World/StationC/WallSlab", (5.0, 0.2, 3.0),
+            (CX0 + 2.5, 0.11, 1.5), (VBACK_C, 0, 0), solid, semantic="wall")
+    C["surfaces"]["Wall"] = {"role": "vertical_reference",
+                             "signal_tilt_deg": VBACK_C, "world_normal": cwn}
+
+    # 동바리 3본 — 기울기를 서로 다르게 두어 판정 분해능을 본다
+    #   0.0° 합격 / 0.6° 경계 / 1.5° 명확한 기준초과
+    for k, (bx, by, tilt) in enumerate([(1.6, 1.15, 0.0),
+                                        (2.4, 1.30, 0.6),
+                                        (3.2, 1.10, 1.5)]):
+        C["members"][f"shoring_{k}"] = add_shoring(
+            stage, f"/World/StationC/Shoring{k}", (CX0 + bx, by, 0.0),
+            rebar_mat, height=2.6, radius=0.0243, tilt_deg=(tilt, 0.0))
+
+    # 철근 2본 — 동바리와 같은 선형 부재이나 지름이 훨씬 작아(Ø16mm)
+    # 격자점이 몇 개 안 붙는다. 최소 점수 게이트 검증용.
+    for k, (bx, by, tilt) in enumerate([(2.0, 0.75, 0.0), (2.9, 0.80, 2.0)]):
+        C["members"][f"rebar_{k}"] = add_rebar(
+            stage, f"/World/StationC/Rebar{k}", (CX0 + bx, by, 0.6),
+            h=1.2, r=0.008, tilt=tilt, material=rebar_mat)
+
+    # 작업등
+    workC = UsdLux.RectLight.Define(stage, "/World/Lights/WorkLightC")
+    workC.CreateIntensityAttr(12000.0); workC.CreateWidthAttr(1.0)
+    workC.CreateHeightAttr(1.0)
+    UsdGeom.Xformable(workC).AddTranslateOp().Set(Gf.Vec3d(CX0 + 2.5, 3.2, 2.6))
+    UsdGeom.Xformable(workC).AddRotateXYZOp().Set(Gf.Vec3f(-115, 0, 0))
+
+    # 카메라 앵커: 벽에서 1.2m 떨어져 약간 아래로 숙여 벽+바닥+동바리를
+    # 한 화면에 담는다 (합성 씬 synth_scene 과 같은 구도)
+    C["camera_anchor"] = add_anchor(stage, "/World/StationC/CamAnchor",
+                                    (CX0 + 2.4, 1.35, 1.35), (-22, 0, -90))
+    gt["stations"]["StationC"] = C
 
     # ===== 결함 높이맵 시각화 (CLEAN / REALISTIC / NUISANCE) =====
     try:
@@ -415,6 +584,12 @@ def main():
     print("Floor n=", gt["stations"]["StationA"]["surfaces"]["Floor"]["world_normal"])
     print("WallBack n=", gt["stations"]["StationA"]["surfaces"]["WallBack"]["world_normal"])
     print("Panel n=", gt["stations"]["StationB"]["world_normal"])
+    _C = gt["stations"]["StationC"]
+    print("StationC Floor n=", _C["surfaces"]["Floor"]["world_normal"],
+          " Wall n=", _C["surfaces"]["Wall"]["world_normal"])
+    for _k, _v in _C["members"].items():
+        print(f"  {_k}: 수직도 {_v['verticality_deg']}deg  축 {_v['world_axis']}")
+    print("Semantics API:", "pxr.Semantics" if _HAS_SEMANTICS_API else "속성 직접기록(폴백)")
 
 
 if __name__ == "__main__":

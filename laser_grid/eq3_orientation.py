@@ -175,6 +175,34 @@ def measure_axis_verticality(axis_dir, g_hat=None):
                                 "axis_vertical")
 
 
+def gravity_from_camera_rotation(R_world_cam, world_up=(0.0, 0.0, 1.0)):
+    """
+    씬의 카메라 자세행렬에서 조사기 좌표계 중력벡터를 구한다 (시뮬레이션용).
+
+    실장비는 IMU 로 중력을 직접 재지만(gravity_in_laser_frame), 시뮬레이션
+    에서는 카메라 자세를 알고 있으므로 월드 중력을 카메라 좌표로 돌리면
+    된다. 두 경로 모두 같은 ĝ 를 내놓아야 하며, 이것이 IMU 캘리브레이션
+    검증의 기준이 된다.
+
+    Parameters
+    ----------
+    R_world_cam : (3,3)
+        열이 [right, down, forward] 인 카메라 자세행렬 (월드 좌표계 기준).
+        inspection.py 의 R = column_stack([right_l, up_l, view_l]) 이며,
+        up_l = cross(view_l, right_l) 이라 실제로는 이미지 아래 방향이다
+        (eq1 의 Y-하단 규약과 일치).
+    world_up : (3,)
+        월드 상방. Z-up 씬이면 (0,0,1).
+
+    Returns
+    -------
+    g_hat : (3,) 조사기 좌표계에서 중력이 향하는 단위벡터
+    """
+    R = np.asarray(R_world_cam, dtype=float)
+    g_world = -normalize(world_up)          # 중력은 상방의 반대
+    return normalize(R.T @ g_world)
+
+
 # =====================================================================
 # 판정
 # =====================================================================

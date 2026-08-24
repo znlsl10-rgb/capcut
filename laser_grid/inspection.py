@@ -54,6 +54,24 @@ STATIONS = {
     "StationB":       {"target": "/World/StationB/Panel",
                        "normal": [0., -1., 0.], "inspect": "flatness",
                        "standoff_m": 1.0},
+    # StationC: 벽+바닥+동바리+철근이 한 화면에 들어오는 혼합 장면.
+    # inspect 를 "auto" 로 두면 검측 종류를 설정에서 정하지 않고
+    # 세그멘테이션 결과에서 영역별로 결정한다.
+    "StationC_Mixed": {"target": "/World/StationC/WallFace",
+                       "normal": [0., -1., 0.], "inspect": "auto",
+                       "standoff_m": 1.2,
+                       "pitch_down_deg": 22.0,
+                       "segmentation": True},
+}
+
+# 세그멘테이션 기반 영역별 검측 설정
+SEGMENTATION = {
+    "enabled":       True,      # inspect=="auto" 스테이션에서 사용
+    "backend":       "gt",      # gt(Isaac Semantics) | geom | sam | vlm
+    "erode_px":      3,         # 마스크 침식 (경계 오염 제거)
+    "erode_thin_px": 1,         # 동바리·철근처럼 얇은 부재는 약하게
+    "sigma_u_px":    0.2,       # 선검출 픽셀 오차 (불확실도 산정용)
+    "target_sigma_mm": 2.0,     # 평활도 목표 정밀도 (PDF 1.1)
 }
 SCENE_USD  = "/home/develop/Desktop/laser_grid_test_4/inspection_lab_realistic.usda"
 GT_JSON    = "/home/develop/Desktop/laser_grid_test_4/inspection_ground_truth_realistic.json"
@@ -68,6 +86,18 @@ def _load_algo(path, func_name):
     spec = _ilu.spec_from_file_location("_algo", path)
     mod  = _ilu.module_from_spec(spec); spec.loader.exec_module(mod)
     return getattr(mod, func_name)
+
+
+_MODULE_CACHE = {}
+
+def _load_module_cached(name):
+    """같은 모듈을 두 번 실행하지 않도록 캐시해 로드한다."""
+    if name not in _MODULE_CACHE:
+        spec = _ilu.spec_from_file_location(
+            name, _os.path.join(_HERE, f"{name}.py"))
+        m = _ilu.module_from_spec(spec); spec.loader.exec_module(m)
+        _MODULE_CACHE[name] = m
+    return _MODULE_CACHE[name]
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 fn_detect = None  # 초기값, SimulationApp 이후 _init_algorithms()로 로드
@@ -382,7 +412,61 @@ def _setup_camera(stage):
         uc.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 50.0))
     except Exception as e:
         LOG(f"  [경고] 카메라 파라미터: {e}")
+
+    # ── 시맨틱 세그멘테이션 어노테이터 ──
+    # Replicator 가 씬의 Semantics 라벨을 읽어 화소별 정답 마스크를 준다.
+    # 사람이 라벨링할 필요 없이 세그멘테이션 정답을 얻는 경로이며,
+    # 이것이 있어야 최종 오차를 검측식/선검출/세그멘테이션으로 분해할 수 있다.
+    _attach_semantic_annotator(stage)
     return cam
+
+
+_SEM_ANNOTATOR = None
+_SEM_RENDER_PRODUCT = None
+
+
+def _attach_semantic_annotator(stage):
+    """semantic_segmentation 어노테이터를 검측 카메라에 붙인다."""
+    global _SEM_ANNOTATOR, _SEM_RENDER_PRODUCT
+    if _SEM_ANNOTATOR is not None:
+        return _SEM_ANNOTATOR
+    try:
+        import omni.replicator.core as rep
+        W_px, H_px = CAMERA_PARAMS["resolution"]
+        _SEM_RENDER_PRODUCT = rep.create.render_product(
+            "/World/InspectionRig/InspectionCamera", (W_px, H_px))
+        _SEM_ANNOTATOR = rep.AnnotatorRegistry.get_annotator(
+            "semantic_segmentation", init_params={"colorize": False})
+        _SEM_ANNOTATOR.attach([_SEM_RENDER_PRODUCT])
+        LOG("  시맨틱 어노테이터 부착 완료")
+    except Exception as e:
+        LOG(f"  [경고] 시맨틱 어노테이터 부착 실패: {e} "
+            f"→ 세그멘테이션은 backend='geom' 폴백 사용")
+        _SEM_ANNOTATOR = None
+    return _SEM_ANNOTATOR
+
+
+def _grab_semantic_mask():
+    """
+    현재 프레임의 정답 라벨맵과 id→라벨 사전을 가져온다.
+
+    Returns
+    -------
+    (label_map (H,W) int, id_to_semantic {id: "class:wall"}) 또는 (None, None)
+    """
+    if _SEM_ANNOTATOR is None:
+        return None, None
+    try:
+        d = _SEM_ANNOTATOR.get_data()
+        lm = np.asarray(d["data"])
+        if lm.ndim == 3:
+            lm = lm[..., 0]
+        info = d.get("info", {}) or {}
+        id2l = info.get("idToLabels", {}) or {}
+        return lm.astype(np.int32), id2l
+    except Exception as e:
+        LOG(f"  [경고] 시맨틱 마스크 획득 실패: {e}")
+        return None, None
 
 
 def _set_camera_xform(stage, R, cam_pos):
@@ -464,6 +548,21 @@ def capture_station(stage, world, camera, line_angles,
 
     laser_center = center + normal * _standoff
     view_l  = _norm(center-laser_center)
+
+    # 혼합 장면(StationC)은 벽을 정면으로 겨누면 바닥이 화면에 안 들어온다.
+    # pitch_down_deg 만큼 시선을 아래로 돌려 두 면을 한 프레임에 담는다.
+    # 이때 각 면에 대한 정면 가정이 깨지므로, 검측은 반드시 중력(ĝ) 기준
+    # 식(eq3 v2)으로 해야 한다.
+    _pitch = float(cfg.get("pitch_down_deg", 0.0))
+    if abs(_pitch) > 1e-6:
+        _ax = _norm(np.cross(view_l, up))          # 시선 기준 우측 축
+        _th = np.radians(_pitch)
+        _K  = np.array([[0., -_ax[2], _ax[1]],
+                        [_ax[2], 0., -_ax[0]],
+                        [-_ax[1], _ax[0], 0.]])
+        _R  = np.eye(3) + np.sin(_th)*_K + (1-np.cos(_th))*(_K@_K)  # 로드리게스
+        view_l = _norm(_R @ view_l)
+        LOG(f"  촬영 자세: 아래로 {_pitch}° 숙임 (벽+바닥 동시 촬영)")
     right_l = _norm(np.cross(view_l, up))   # SetLookAt과 동일한 right 방향
     up_l    = _norm(np.cross(view_l,right_l))
     R_laser  = np.column_stack([right_l,up_l,view_l])
@@ -553,7 +652,11 @@ def capture_station(stage, world, camera, line_angles,
     # rgb_raw가 이미 "조명 ON + 레이저 없음" 상태이므로 그대로 OFF 프레임으로
     # 사용한다. 차영상 모드에서는 아래 레이저 렌더도 조명을 켠 채 수행하여
     # ON/OFF 두 프레임의 조명 조건을 일치시킨다.
-    rgb_off = rgb_raw if use_diff_image else None
+    # rgb_off 는 차영상뿐 아니라 **세그멘테이션 입력**으로도 쓰이므로 항상 남긴다.
+    # 레이저 ON 프레임은 초록 격자선이 화면을 덮어 세그멘테이션 모델이 선을
+    # 물체 경계로 오인한다. 두 프레임은 수십 µs 간격이라 마스크가 픽셀 단위로
+    # 그대로 정합되므로, 추가 촬영 없이 문제가 사라진다.
+    rgb_off = rgb_raw
 
     # ── 발광 메시 렌더 → rgb_laser ──
     # 일반 모드: 조명을 끄고 레이저만 촬영 (암실 모사, 배경광 없음)
@@ -619,6 +722,14 @@ def capture_station(stage, world, camera, line_angles,
     # ── IMU 픽셀 보정 ──
     lines_corrected=_correct_imu(lines_filtered,imu_data,cp)
 
+    # ── 시맨틱 정답 마스크 (세그멘테이션 기준선) ──
+    seg_label_map, seg_id_to_label = (None, None)
+    if cfg.get("segmentation") or cfg.get("inspect") == "auto":
+        seg_label_map, seg_id_to_label = _grab_semantic_mask()
+        if seg_label_map is not None:
+            LOG(f"  시맨틱 마스크 {seg_label_map.shape} "
+                f"클래스 {sorted(set(str(v) for v in seg_id_to_label.values()))}")
+
     # ── GT 매핑 ──
     gt_station_key="StationA" if station_name.startswith("StationA") else station_name
     gt_station=gt_full.get("stations",{}).get(gt_station_key,{})
@@ -651,6 +762,12 @@ def capture_station(stage, world, camera, line_angles,
         "lines_pixels_raw": lines_pixels_raycast,  # raycast 참조
         "ground_truth":  gt_filtered,
         "scene_ground_truth": sgt,
+        "segmentation": ({"available": True,
+                          "id_to_semantic": {str(k): (v if isinstance(v, str)
+                                                      else v.get("class", ""))
+                                             for k, v in seg_id_to_label.items()},
+                          "label_map_png": "semantic_label.png"}
+                         if seg_label_map is not None else {"available": False}),
         "quality":{"rays_hit":n_hit,
                    "rays_total":len(line_angles)*GRID_PARAMS["samples_per_line"],
                    "valid_V":len(valid_V),"rejected":len(rejected)},
@@ -665,6 +782,23 @@ def capture_station(stage, world, camera, line_angles,
     _save_images(out_dir, rgb_raw, rgb_laser,
                  lines_corrected, lines_pixels_raycast,
                  rgb_off=rgb_off)
+
+    # 라벨맵은 16bit PNG 로 저장 (클래스 id 를 무손실 보존)
+    if seg_label_map is not None:
+        try:
+            Image.fromarray(seg_label_map.astype(np.uint16)).save(
+                os.path.join(out_dir, "semantic_label.png"))
+        except Exception as e:
+            LOG(f"  [경고] 라벨맵 저장: {e}")
+
+    # ── inspect=="auto" 이면 영역별 검측을 바로 수행 ──
+    if cfg.get("inspect") == "auto" and SEGMENTATION.get("enabled"):
+        try:
+            out["region_inspection"] = _run_region_inspection(
+                lines_corrected, cp, R, seg_label_map, seg_id_to_label,
+                rgb_off, out_dir)
+        except Exception as e:
+            LOG(f"  [경고] 영역별 검측 실패: {e}")
 
     LOG(f"  {station_name}: 적중 {n_hit}  유효V {len(valid_V)}  "
         f"기각 {len(rejected)}  → {out_dir}")
@@ -698,6 +832,65 @@ def _save_images(out_dir, rgb_raw, rgb_laser,
         im.save(os.path.join(out_dir,"overlay.png"))
     except Exception as e:
         LOG(f"  [경고] 이미지저장: {e}")
+
+
+# =====================================================================
+# 영역별 검측 (세그멘테이션 기반)
+# =====================================================================
+def _run_region_inspection(lines_pixels, cp, R, label_map, id_to_semantic,
+                           rgb_off, out_dir):
+    """
+    한 장의 촬영 결과를 영역별로 검측한다.
+
+    실제 계산은 pipeline_region 에 있다(Isaac 비의존이라 오프라인에서도
+    같은 코드로 검증된다). 여기서는 입력을 넘기고 결과를 저장만 한다.
+
+    label_map 이 없으면(어노테이터 미부착 등) 기하 전용 백엔드로 폴백한다.
+    """
+    mod = _load_module_cached("pipeline_region")
+    pr, fmt = mod.inspect_capture, mod.format_report
+
+    backend = SEGMENTATION.get("backend", "gt")
+    if label_map is None and backend == "gt":
+        LOG("  [폴백] 시맨틱 마스크 없음 → backend='geom'")
+        backend = "geom"
+
+    line_angles = _make_line_angles(GRID_PARAMS["n_vertical"],
+                                    GRID_PARAMS["n_horizontal"],
+                                    GRID_PARAMS["fov_deg"])
+    res = pr(lines_pixels, line_angles, cp, R,
+             label_map=label_map, id_to_semantic=id_to_semantic,
+             rgb_off=rgb_off, backend=backend,
+             erode_default_px=SEGMENTATION.get("erode_px", 3),
+             erode_thin_px=SEGMENTATION.get("erode_thin_px", 1),
+             sigma_u_px=SEGMENTATION.get("sigma_u_px", 0.2),
+             target_sigma_mm=SEGMENTATION.get("target_sigma_mm", 2.0))
+
+    LOG("\n" + fmt(res))
+    try:
+        with open(os.path.join(out_dir, "region_inspection.json"),
+                  "w", encoding="utf-8") as fp:
+            json.dump(_jsonable(res), fp, ensure_ascii=False, indent=2)
+    except Exception as e:
+        LOG(f"  [경고] 영역검측 결과 저장: {e}")
+    return _jsonable(res)
+
+
+def _jsonable(o):
+    """numpy 타입을 json 이 받는 형태로 바꾼다."""
+    if isinstance(o, dict):
+        return {str(k): _jsonable(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_jsonable(v) for v in o]
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
+    return o
 
 
 # =====================================================================
@@ -748,6 +941,7 @@ def main():
 
     LOG(f"\n완료 → {OUTPUT_DIR}")
     LOG("다음: python3 3_pipeline_eq_verify.py <data.json> [모드]")
+    LOG("      영역별 검측 결과는 각 스테이션의 region_inspection.json 참고")
 
 
 if __name__=="__main__":

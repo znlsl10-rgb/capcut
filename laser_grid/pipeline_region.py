@@ -36,6 +36,7 @@ def _load(name):
     return m
 
 
+_EQ1 = _load("eq1_triangulation")
 _EQ2 = _load("eq2_plane_fit")
 _EQ3 = _load("eq3_orientation")
 _EQ4 = _load("eq4_flatness_line")
@@ -246,6 +247,99 @@ def _regions_from_point_labels(table, point_labels, class_names, min_points=12):
         regions.append({"class": cls, "class_id": int(cid), "idx": idx,
                         "n_points": int(len(idx))})
     return regions, stats
+
+
+# =====================================================================
+# 촬영 결과 → 검측 (Isaac 비의존)
+# =====================================================================
+def triangulate_lines(lines_pixels, line_angles, camera_params):
+    """
+    검출된 선의 픽셀점을 eq1 로 3D 로 되돌린다.
+
+    V선만 처리하는 이유
+    ------------------
+    기선이 X축 방향이라 시차는 u 좌표에만 나타나고, 깊이를 풀려면 그 점의
+    발사각 α 를 알아야 한다.
+      · V선 : α 가 선마다 고정 → 선을 따라 조밀 샘플링해도 전부 풀린다
+      · H선 : β 만 고정이고 α 는 점마다 다르다. v 좌표는 (v-c_y)/f = tanβ
+              라는 이미 아는 사실만 되풀이하므로 깊이 정보가 없다.
+    따라서 H선은 V선과의 교점에서만 α 를 회복할 수 있고, 그 교점은 이미
+    V선 샘플에 포함된다. V선 조밀 샘플링이 곧 완전한 정보다.
+
+    Returns
+    -------
+    lines_xyz : {lid: [(X,Y,Z), ...]}
+    lines_uv  : {lid: [(u,v), ...]}   삼각측량에 성공한 점만 (순서 일치)
+    """
+    f = float(camera_params["f_px"]); b = float(camera_params["b_m"])
+    cx = float(camera_params["cx_px"]); cy = float(camera_params["cy_px"])
+    lines_xyz, lines_uv, skipped = {}, {}, []
+
+    for lid, pts in lines_pixels.items():
+        info = line_angles.get(lid)
+        if info is None:
+            continue
+        if info.get("fixed") != "alpha":
+            skipped.append(lid)
+            continue
+        alpha = float(info["angle_rad"])
+        xyz, uv = [], []
+        for p in pts:
+            u, v = float(p[0]), float(p[1])
+            try:
+                X, Y, Z = _EQ1.triangulate_point(u, v, alpha, 0.0, f, b, cx, cy)
+            except ValueError:
+                continue                      # 시차 음수 = 캘리브레이션 이상
+            if not np.isfinite(Z) or Z <= 0:
+                continue
+            xyz.append([X, Y, Z]); uv.append([u, v])
+        if len(xyz) >= 5:
+            lines_xyz[lid] = xyz
+            lines_uv[lid] = uv
+    return lines_xyz, lines_uv, skipped
+
+
+def inspect_capture(lines_pixels, line_angles, camera_params, R_world_cam,
+                    label_map=None, id_to_semantic=None, rgb_off=None,
+                    g_hat=None, backend=None, **kw):
+    """
+    한 번의 촬영 결과를 받아 영역별 검측까지 수행한다.
+
+    inspection.py(Isaac)와 오프라인 검증 양쪽에서 같은 코드를 쓰기 위해
+    Isaac 의존성을 두지 않는다.
+
+    Parameters
+    ----------
+    R_world_cam : (3,3) or None
+        카메라 자세행렬. 주면 여기서 중력을 유도한다(g_hat 미지정 시).
+    label_map, id_to_semantic : Isaac 시맨틱 어노테이터 출력
+        있으면 backend='gt', 없으면 backend='geom' 으로 자동 폴백.
+    """
+    if g_hat is None:
+        if R_world_cam is None:
+            raise ValueError("g_hat 또는 R_world_cam 중 하나는 필요합니다 "
+                             "(중력 기준 없이는 수직·수평도를 정의할 수 없음).")
+        g_hat = _EQ3.gravity_from_camera_rotation(R_world_cam)
+
+    lines_xyz, lines_uv, skipped = triangulate_lines(
+        lines_pixels, line_angles, camera_params)
+    if not lines_xyz:
+        return {"regions": [], "summary": {"n_regions": 0},
+                "error": "삼각측량 가능한 V선이 없습니다.",
+                "skipped_lines": skipped}
+
+    if backend is None:
+        backend = "gt" if label_map is not None else "geom"
+    seg_kwargs = ({"label_map": label_map, "id_to_semantic": id_to_semantic}
+                  if backend == "gt" else {})
+
+    res = inspect_image(lines_uv, lines_xyz, camera_params, g_hat,
+                        rgb_off=rgb_off, seg_backend=backend,
+                        seg_kwargs=seg_kwargs, **kw)
+    res["gravity_laser_frame"] = [round(float(x), 6) for x in np.asarray(g_hat)]
+    res["skipped_lines"] = skipped
+    res["n_triangulated"] = int(sum(len(v) for v in lines_xyz.values()))
+    return res
 
 
 # =====================================================================
