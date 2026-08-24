@@ -222,18 +222,36 @@ def judge_pass_fail(theta_deg, tolerance_deg=0.5):
     return bool(abs(theta_deg) <= tolerance_deg)
 
 
-def judge_kcs(theta_deg, member_class, member_length_m=None):
+def judge_kcs(theta_deg, member_class, member_length_m=None,
+              measured_span_m=None):
     """
     KCS 기준 판정.
 
-    member_length_m 이 있으면 시방 본기준(tol_mm)으로 mm 판정하고,
-    "층고대비 권장"인 h/1000(tol_ratio)은 본판정을 덮어쓰지 않고
-    allow_mm_recommended / is_pass_recommended 로 병기한다.
-    member_length_m 이 없으면 각도 기준(tol_deg)으로 판정한다.
+    【부재 길이와 측정 구간을 구분하는 이유】
+      KCS 의 ±20mm 는 **부재 전체** 기준이다. 그런데 한 장의 사진에서
+      레이저 격자가 닿는 것은 부재의 일부뿐이다. 예를 들어 높이 2.4m
+      동바리에서 격자가 0.92m 구간만 맞을 수 있다.
+
+      이때 측정 구간 길이를 부재 길이로 대신 쓰면 근거가 틀린다. 각도는
+      맞게 쟀어도 mm 환산의 기준 길이가 실제와 달라, 우연히 허용치 근처
+      값이 나오면 합격/불합격이 뒤집힌다.
+
+      → 부재 전체 길이(member_length_m)를 아는 경우에만 mm 로 판정한다.
+        모르면 **각도로 판정**하고, 측정 구간 기준 mm 편차는 참고값으로만
+        병기한다. 각도 판정은 PDF 1.1 의 ±0.5° 목표와 같은 기준이다.
+
+    Parameters
+    ----------
+    member_length_m : float or None
+        부재 전체 길이. 도면·시공계획에서 알 수 있을 때만 준다.
+    measured_span_m : float or None
+        이번 촬영에서 실제로 점이 잡힌 구간 길이(eq2.fit_axis_pca 의
+        length_m). 참고 편차 산출과 부분측정 표기에 쓴다.
 
     Returns
     -------
-    dict — {is_pass, basis, theta_deg, deviation_mm, allow_mm, allow_deg}
+    dict — is_pass, basis, theta_deg, deviation_mm, allow_mm, allow_deg,
+           partial_span (측정 구간만 본 것인지)
     """
     spec = KCS_SPEC.get(member_class, {"tol_mm": 20.0, "tol_ratio": None,
                                        "tol_deg": 0.5})
@@ -241,9 +259,20 @@ def judge_kcs(theta_deg, member_class, member_length_m=None):
            "theta_deg": round(float(theta_deg), 4),
            "allow_deg": spec["tol_deg"]}
 
+    if measured_span_m:
+        out["measured_span_m"] = round(float(measured_span_m), 4)
+        out["span_deviation_mm"] = round(
+            deviation_mm(theta_deg, measured_span_m), 3)
+
     if member_length_m is None or member_length_m <= 0:
+        # 부재 전체 길이를 모른다 → 각도로 판정 (mm 는 참고값)
         out.update(basis="angle", deviation_mm=None, allow_mm=None,
+                   partial_span=bool(measured_span_m),
                    is_pass=bool(abs(theta_deg) <= spec["tol_deg"]))
+        if measured_span_m:
+            out["note"] = ("부재 전체 길이를 모르므로 각도로 판정함. "
+                           "mm 편차는 측정 구간 "
+                           f"{out['measured_span_m']}m 기준 참고값")
         return out
 
     dev = deviation_mm(theta_deg, member_length_m)
@@ -251,6 +280,8 @@ def judge_kcs(theta_deg, member_class, member_length_m=None):
     out.update(basis="mm", deviation_mm=round(dev, 3),
                allow_mm=round(allow, 3),
                member_length_m=round(float(member_length_m), 4),
+               partial_span=bool(measured_span_m
+                                 and measured_span_m < 0.8 * member_length_m),
                is_pass=bool(dev <= allow))
 
     # h/1000 은 PDF 1.2 표에서 "층고대비 권장"으로 병기된 값이므로
@@ -259,6 +290,10 @@ def judge_kcs(theta_deg, member_class, member_length_m=None):
         allow_rec = member_length_m * 1000.0 * spec["tol_ratio"]
         out["allow_mm_recommended"] = round(float(allow_rec), 3)
         out["is_pass_recommended"]  = bool(dev <= allow_rec)
+    if out["partial_span"]:
+        out["note"] = (f"부재 {out['member_length_m']}m 중 "
+                       f"{out['measured_span_m']}m 만 촬영됨 — 각도를 전체에 "
+                       f"외삽한 값")
     return out
 
 
@@ -310,7 +345,8 @@ if __name__ == "__main__":
     d_shoring = _rx(1.2) @ np.array([0, -1.0, 0])   # 연직에서 1.2° 기움
     ta = measure_axis_verticality(d_shoring)
     ok &= abs(ta - 1.2) < 1e-6
-    jd = judge_kcs(ta, "shoring", member_length_m=2.7)
+    jd = judge_kcs(ta, "shoring", member_length_m=2.7,
+                   measured_span_m=0.92)
     print(f"  [5] 동바리 축 수직도     측정 {ta:8.4f}° / 참값 1.2000° "
           f"오차 {abs(ta-1.2):.2e}° {'PASS' if abs(ta-1.2)<1e-6 else 'FAIL'}")
     print(f"      → 길이 2.7m 환산 편차 {jd['deviation_mm']:.2f}mm "

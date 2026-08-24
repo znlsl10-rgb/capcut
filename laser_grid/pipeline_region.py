@@ -56,7 +56,7 @@ FLATNESS_TOL_MM = {"wall": 7.0, "plaster_wall": 10.0, "masonry": 10.0,
 # =====================================================================
 def measure_region(points_3d, cls, g_hat, camera_params,
                    flatness_threshold_mm=1.5, sigma_u_px=0.2,
-                   target_sigma_mm=2.0):
+                   target_sigma_mm=2.0, member_length_m=None):
     """
     한 영역의 3D 점군에 클래스에 맞는 검측식을 적용한다.
 
@@ -91,8 +91,13 @@ def measure_region(points_3d, cls, g_hat, camera_params,
             return out
         theta = _EQ3.measure_axis_verticality(ax["direction"], g_hat)
         out["theta_deg"] = round(theta, 4)
+        # 격자가 닿은 구간만 보이므로 부재 전체 길이는 알 수 없다.
+        # 측정 구간을 부재 길이로 대신 쓰면 mm 판정의 근거가 틀어지므로,
+        # 전체 길이는 None 으로 두고 각도로 판정한다
+        # (member_length_m 은 도면에서 알 때 호출부가 넘긴다).
         out["judge"] = _EQ3.judge_kcs(theta, kcs_cls,
-                                      member_length_m=ax["length_m"])
+                                      member_length_m=member_length_m,
+                                      measured_span_m=ax["length_m"])
         out["uncertainty"] = _EQ5.region_uncertainty(
             pts, camera_params, normal=None, sigma_u_px=sigma_u_px,
             target_sigma_mm=target_sigma_mm)
