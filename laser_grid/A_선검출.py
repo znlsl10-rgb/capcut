@@ -56,12 +56,16 @@ try:
 except ImportError:
     _SCIPY = False
 
+# 다중면 모드 플래그. _trace_line 은 detect 인자를 직접 받지 못하므로
+# 모듈 전역으로 전달한다(호출 진입점이 detect 하나뿐이라 안전).
+_MULTI_SURFACE = [False]
+
 
 # =====================================================================
 # 공개 인터페이스
 # =====================================================================
 def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
-           laser_off_image=None):
+           laser_off_image=None, multi_surface=False):
     """
     Parameters
     ----------
@@ -73,12 +77,33 @@ def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
     laser_off_image      : np.ndarray (H,W,3) | None
         [방안4] 레이저 OFF 프레임. 주어지면 차영상(ON-OFF)으로
         배경광을 제거한다. None이면 기존 초록채널 분리 사용.
+    multi_surface        : bool
+        화면에 서로 다른 거리의 면이 함께 있는 장면(벽+바닥+동바리 등)이면
+        True. Step5·Step6 의 **단일 평면 가정**을 끈다.
+
+        왜 꺼야 하는가
+        --------------
+        · Step6 _grid_joint_refine 은 검출 교차점 전체를 하나의 이론 격자에
+          전역 스케일+오프셋으로 정렬한다. 이 제약은 "모든 점이 같은 거리의
+          한 평면 위에 있다"는 전제에서만 옳다. 거리가 다른 면이 섞이면
+          제약 자체가 틀린 것이라, 개별 오차를 상쇄하는 게 아니라 실제
+          기하를 격자 모델 쪽으로 끌어당겨 망가뜨린다.
+        · Step5 _validate_and_fix 는 인접선 간격이 이론값보다 좁으면
+          이상선으로 보고 보간 위치로 갈아끼운다. 그런데 먼 면(비스듬한
+          바닥)에서는 선 간격이 실제로 좁아지므로 정상 선을 이상선으로
+          오판한다.
+        · 선을 따라가는 3차 다항식 이상치 제거도 면 경계의 진짜 꺾임을
+          이상치로 지운다 → 임계를 완화한다.
+
+        단일 면만 보는 기존 스테이션(A/B)에서는 False 를 유지해야 기존
+        검증 성능이 그대로 나온다.
 
     Returns
     -------
     {lid: [[u,v], ...]}
     """
     H_img, W_img = rgb_image.shape[:2]
+    _MULTI_SURFACE[0] = bool(multi_surface)
 
     # ── lid 정렬 ─────────────────────────────────────────────────────
     v_lids = sorted([l for l in line_angles if l.startswith("V")],
@@ -168,14 +193,21 @@ def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
 
     # ── Step5: 격자 기하 검증 ─────────────────────────────────────────
     # 현장: raycast 없으므로 폴백을 "인접선 보간 위치"로 대체
-    n_fix_v = _validate_and_fix(out, v_lids, v_centers,
-                                 lines_pixels_raycast,
-                                 camera_params, H_img, W_img,
-                                 line_angles, coord_idx=0)
-    n_fix_h = _validate_and_fix(out, h_lids, h_centers,
-                                 lines_pixels_raycast,
-                                 camera_params, H_img, W_img,
-                                 line_angles, coord_idx=1)
+    if multi_surface:
+        # 다중 면 장면에서는 선 간격이 면마다 달라지는 것이 정상이므로
+        # 간격 기반 이상선 판정을 쓰지 않는다.
+        n_fix_v = n_fix_h = 0
+        print("  [A] 다중면 모드: 격자검증(Step5) 건너뜀 "
+              "— 면마다 선 간격이 달라 이상선 오판 위험")
+    else:
+        n_fix_v = _validate_and_fix(out, v_lids, v_centers,
+                                     lines_pixels_raycast,
+                                     camera_params, H_img, W_img,
+                                     line_angles, coord_idx=0)
+        n_fix_h = _validate_and_fix(out, h_lids, h_centers,
+                                     lines_pixels_raycast,
+                                     camera_params, H_img, W_img,
+                                     line_angles, coord_idx=1)
     if n_fix_v or n_fix_h:
         print(f"  [A] 격자검증: V {n_fix_v}개 / H {n_fix_h}개 → 보간 위치로 교체")
 
@@ -184,9 +216,16 @@ def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
     #         기준이 없다(b=180mm 이상값 사례). DOE 격자는 각 선이
     #         등발사각 제약을 만족하므로, 검출된 교차점 전체를 격자
     #         모델(등간격 격자)에 동시 정렬해 개별 오차를 상쇄한다.
-    n_adj = _grid_joint_refine(out, v_lids, h_lids,
-                               line_angles, camera_params,
-                               H_img, W_img)
+    if multi_surface:
+        # 거리가 다른 면이 섞이면 "전체가 하나의 이론 격자" 제약이 틀린
+        # 전제이므로, 보정이 아니라 실제 기하의 훼손이 된다.
+        n_adj = 0
+        print("  [A] 다중면 모드: 격자 동시 최적화(Step6) 건너뜀 "
+              "— 단일 평면 가정이 성립하지 않음")
+    else:
+        n_adj = _grid_joint_refine(out, v_lids, h_lids,
+                                   line_angles, camera_params,
+                                   H_img, W_img)
     if n_adj:
         print(f"  [A] 격자 동시 최적화: {n_adj}개 교차점 보정")
 
@@ -545,6 +584,11 @@ def _trace_line(intensity_map, table, center_fallback,
         return raw_pts
 
     coord_idx = 0 if axis == "V" else 1
+    # 다중면 모드에서는 면 경계의 진짜 꺾임을 이상치로 지우지 않도록
+    # 3차 다항식 추세 가정을 완화한다(차수↓, 임계↑).
+    if _MULTI_SURFACE[0]:
+        return _mad_outlier_remove(raw_pts, coord_idx, poly_deg=1,
+                                   mad_k=9.0, min_abs_px=6.0)
     return _mad_outlier_remove(raw_pts, coord_idx)
 
 

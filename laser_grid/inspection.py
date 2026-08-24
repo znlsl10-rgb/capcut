@@ -692,19 +692,25 @@ def capture_station(stage, world, camera, line_angles,
     if fn_detect is None:
         _init_algorithms()
     # [방안4] 차영상 모드면 OFF 프레임 함께 전달 (배경광 제거)
+    # 다중면 장면(inspect=="auto")에서는 A_선검출의 단일 평면 가정을 끈다.
+    # 격자 동시 최적화·간격 기반 이상선 판정은 "화면 전체가 같은 거리의 한
+    # 평면"이라는 전제 위에 서 있어, 벽+바닥+동바리가 섞이면 보정이 아니라
+    # 실제 기하의 훼손이 된다.
+    _multi = (cfg.get("inspect") == "auto") or bool(cfg.get("segmentation"))
     if rgb_laser is not None:
+        _kw = {}
+        if use_diff_image and rgb_off is not None:
+            _kw["laser_off_image"] = rgb_off
+        if _multi:
+            _kw["multi_surface"] = True
         try:
-            if use_diff_image and rgb_off is not None:
-                lines_pixels_detected = fn_detect(rgb_laser,
-                                                  lines_pixels_raycast,
-                                                  line_angles, cp,
-                                                  laser_off_image=rgb_off)
-            else:
-                lines_pixels_detected = fn_detect(rgb_laser,
-                                                  lines_pixels_raycast,
-                                                  line_angles, cp)
+            lines_pixels_detected = fn_detect(rgb_laser, lines_pixels_raycast,
+                                              line_angles, cp, **_kw)
         except TypeError:
-            # 구버전 A_선검출 (laser_off_image 미지원) 폴백
+            # 구버전 A_선검출 (신규 인자 미지원) 폴백
+            if _multi:
+                LOG("  [경고] A_선검출이 multi_surface 를 지원하지 않습니다. "
+                    "다중면 장면에서 격자 동시 최적화가 기하를 훼손할 수 있습니다.")
             lines_pixels_detected = fn_detect(rgb_laser,
                                               lines_pixels_raycast,
                                               line_angles, cp)
