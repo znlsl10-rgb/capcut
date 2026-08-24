@@ -195,6 +195,48 @@ def test_region_pipeline():
                   f["judgement"] in ("합격", "판정보류(분해능)"))
 
 
+def test_segmentation_robustness():
+    """세그멘테이션이 훼손돼도 각도 판정이 유지되는지"""
+    print("\n[8] 세그멘테이션 훼손 강건성")
+    EXP = _load("experiment_segmentation")
+    scene = SYN.build_scene()
+    gt = scene["gt"]
+    want = {"wall": "wall_verticality_deg",
+            "floor": "floor_horizontality_deg",
+            "shoring": "shoring_verticality_deg"}
+
+    def worst_err(row):
+        if row["missing"]:
+            return float("inf")
+        return max(row["errors_deg"].values())
+
+    # 마스크 팽창 — 얇은 동바리가 벽 점에 오염된다
+    for k in (2, 8, 16):
+        lm = EXP.perturb_mask(scene["label_map"], "dilate", k,
+                              np.random.default_rng(0))
+        r = EXP.run_once(scene, lm, "gt")
+        check(f"마스크 +{k}px 팽창 — 세 부재 모두 측정, 최악 오차 "
+              f"{worst_err(r):.4f}° ≤ 0.5°", worst_err(r) <= 0.5)
+
+    # 라벨 오분류 — 두 부재가 한 라벨로 병합되는 최악의 경우
+    fails = []
+    for p in (0.34, 0.67, 1.0):
+        for t in range(3):
+            lm = EXP.perturb_mask(scene["label_map"], "mislabel", p,
+                                  np.random.default_rng(1000 + t))
+            r = EXP.run_once(scene, lm, "gt")
+            if worst_err(r) > 0.5:
+                fails.append(f"p={p} 시행{t}")
+    check(f"라벨 오분류 9종 전부 복구 (실패 {len(fails)}건)"
+          + (f" — {fails}" if fails else ""), not fails)
+
+    # 부재 누락 — 남은 부재는 영향받지 않아야 한다
+    lm = scene["label_map"].copy(); lm[lm == 3] = 0        # 동바리 삭제
+    r = EXP.run_once(scene, lm, "gt")
+    others_ok = all(r["errors_deg"].get(c, 9) <= 0.5 for c in ("wall", "floor"))
+    check("동바리 마스크 삭제 시 벽·바닥은 영향 없음", others_ok)
+
+
 def test_boundary_rejection():
     """경계 오염 제거 — 깊이 불연속"""
     print("\n[7] eq5 경계 정제")
@@ -217,7 +259,8 @@ def main():
     print("=" * 70)
     for t in (test_eq1_triangulation, test_eq3_backward_compat,
               test_gravity_paths_agree, test_tls_plane_vs_legacy,
-              test_axis_fit, test_region_pipeline, test_boundary_rejection):
+              test_axis_fit, test_region_pipeline,
+              test_segmentation_robustness, test_boundary_rejection):
         t()
     print("\n" + "=" * 70)
     if _FAILS:

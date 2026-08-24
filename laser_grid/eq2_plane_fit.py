@@ -302,3 +302,94 @@ def project_to_plane_frame(points_3d, plane):
     rel = pts - origin
     uvw = np.column_stack([rel @ e1, rel @ e2, rel @ n])
     return uvw, (e1, e2, n), origin
+
+def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
+                    seed=42, min_inlier_frac=0.45, min_span_frac=0.2):
+    """
+    이상치에 강한 선형 부재 축 적합 (fit_axis_pca 의 robust 판).
+
+    【왜 필요한가】
+      얇은 부재의 마스크는 실루엣에서 반드시 오염된다. 경계가 몇 px만
+      밖으로 밀려도 뒤쪽 벽면 점이 딸려 들어오는데, 부재가 가늘수록
+      그 몇 점이 차지하는 비중이 크다.
+
+      단순 PCA 는 이 오염에 그대로 끌려간다. 실측에서 동바리 288점에 벽
+      33점(10%)이 섞이자 PCA 형상 판별이 선형에서 평면으로 뒤집혔고,
+      "면↔선형은 기하 우선" 규칙이 올바른 shoring 라벨을 버려 동바리가
+      검측 결과에서 통째로 사라졌다.
+
+      → 축에서 radius_m 안에 드는 점만 골라 적합한다. 원통 표면은 축에서
+        반지름(~24mm)만큼 떨어져 있을 뿐이므로 자연히 살아남고, 뒤쪽 면의
+        점은 축에서 훨씬 멀어 걸러진다.
+
+    Parameters
+    ----------
+    radius_m : float
+        축에서 이 거리 안의 점을 inlier 로 본다. 파이프서포트(Ø48.6mm)는
+        반지름 24mm 이므로 60mm 면 표면과 노이즈를 넉넉히 담는다.
+    min_span_frac : float
+        축 방향을 정할 두 점이 최소한 전체 범위의 이 비율만큼 떨어져야
+        한다. 가까운 두 점으로 방향을 정하면 노이즈가 그대로 각도가 된다.
+
+    Returns
+    -------
+    dict — fit_axis_pca 와 같은 키에 inlier_mask, inlier_frac 추가
+    """
+    pts = np.asarray(points_3d, dtype=float)
+    N = len(pts)
+    if N < min_points:
+        out = fit_axis_pca(pts, min_points=min_points)
+        out["inlier_mask"] = np.ones(N, dtype=bool)
+        out["inlier_frac"] = 1.0
+        return out
+
+    rng = np.random.default_rng(seed)
+    extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+    min_sep = max(min_span_frac * extent, 1e-3)
+
+    best_mask, best_cnt = None, 0
+    for _ in range(int(max_trials)):
+        i, j = rng.choice(N, 2, replace=False)
+        v = pts[j] - pts[i]
+        nv = float(np.linalg.norm(v))
+        if nv < min_sep:
+            continue
+        d = v / nv
+        rel = pts - pts[i]
+        radial = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
+        mask = radial <= radius_m
+        cnt = int(mask.sum())
+        if cnt > best_cnt:
+            best_cnt, best_mask = cnt, mask
+            if cnt > 0.95 * N:
+                break
+
+    if best_mask is None or best_cnt < min_points:
+        out = fit_axis_pca(pts, min_points=min_points)
+        out["inlier_mask"] = np.ones(N, dtype=bool)
+        out["inlier_frac"] = 1.0
+        return out
+
+    # inlier 로 축을 다시 세우고 한 번 더 걸러 안정화
+    for _ in range(2):
+        sub = pts[best_mask]
+        c = sub.mean(axis=0)
+        _, _, vt = np.linalg.svd(sub - c, full_matrices=False)
+        d = vt[0] / np.linalg.norm(vt[0])
+        rel = pts - c
+        radial = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
+        new_mask = radial <= radius_m
+        if int(new_mask.sum()) < min_points:
+            break
+        best_mask = new_mask
+
+    out = fit_axis_pca(pts[best_mask], min_points=min_points)
+    out["inlier_mask"] = best_mask
+    out["inlier_frac"] = round(float(best_mask.mean()), 4)
+    out["n_points_total"] = N
+    if out["inlier_frac"] < min_inlier_frac:
+        out["is_valid"] = False
+        out["reject_reason"] = (f"축 주변 점 비율 부족 "
+                                f"({out['inlier_frac']:.2f} < {min_inlier_frac})")
+    return out
+

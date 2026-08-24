@@ -82,7 +82,8 @@ def measure_region(points_3d, cls, g_hat, camera_params,
 
     # ── 선형 부재: 축 적합 ──
     if kind == "axis_vertical":
-        ax = _EQ2.fit_axis_pca(pts)
+        # 얇은 부재는 마스크 실루엣에서 반드시 오염되므로 robust 적합을 쓴다
+        ax = _EQ2.fit_axis_ransac(pts)
         out["axis"] = {k: (v.tolist() if isinstance(v, np.ndarray) else v)
                        for k, v in ax.items() if k != "reject_reason"}
         if not ax["is_valid"]:
@@ -157,6 +158,96 @@ def measure_region(points_3d, cls, g_hat, camera_params,
     return out
 
 
+def split_incoherent_region(xyz, cls, g_hat, min_points=12,
+                            outlier_frac=0.08, plane_threshold_m=0.015):
+    """
+    한 영역 안에 성질이 다른 면이 섞여 있으면 기하로 되쪼갠다.
+
+    【왜 필요한가】
+      세그멘테이션이 두 부재를 **같은 라벨로 병합**하면(예: 바닥을 벽으로
+      오분류) 두 면의 점이 한 영역에 들어온다. 그러면 영역 평면적합이 두
+      면에 걸쳐지고, 점이 적은 쪽 부재는 outlier 로 밀려 통째로 사라진다.
+      실측에서 바닥 480점이 벽 4121점에 병합되자 바닥 검측 결과가 아예
+      나오지 않았다. 경계가 몇 px 어긋나는 것과는 차원이 다른 실패다.
+
+      eq5 의 라벨 융합은 이 경우를 못 고친다. 융합은 "이 영역이 무엇인가"를
+      바로잡을 뿐, "이 영역이 사실 둘"이라는 것은 판단하지 않기 때문이다.
+
+    【판정 기준】
+      대표 모델(면이면 평면, 선형이면 축)에 대한 outlier 비율이
+      outlier_frac 을 넘고 그 수가 min_points 이상이면 섞였다고 본다.
+      깨끗한 단일 면은 outlier 가 노이즈뿐이라 이 문턱에 닿지 않는다.
+
+    Returns
+    -------
+    list of (class_name, index_array) — 쪼갤 필요가 없으면 원본 하나만
+    """
+    pts = np.asarray(xyz, dtype=float)
+    n = len(pts)
+    keep_all = [(cls, np.arange(n))]
+    if n < 2 * min_points:
+        return keep_all
+
+    # 형상 자체가 불분명하면 그것이 곧 "섞였다"는 증거다.
+    # 대표 모델 적합이 실패했는데 그대로 넘어가면, 병합된 영역이 통째로
+    # 기각되어 두 부재를 다 잃는다(실측: 벽 4134점 + 동바리 288점이 한
+    # 라벨로 묶이자 축 적합이 무효가 되고 영역 전체가 기각됨).
+    ev = _EQ5.geometric_evidence(pts, g_hat)
+    need_split = (ev["shape"] not in ("plane_vertical", "plane_horizontal",
+                                      "linear_vertical")
+                  or float(ev.get("confidence", 0.0)) < 0.5)
+
+    if not need_split:
+        kind = _EQ5.MEASURE_KIND.get(cls)
+        if kind in ("plane_vertical", "plane_horizontal"):
+            try:
+                _, inl = _EQ2.fit_plane_tls_ransac(pts,
+                                                   threshold=plane_threshold_m)
+                n_out = int((~inl).sum())
+            except Exception:
+                return keep_all
+        elif kind == "axis_vertical":
+            ax = _EQ2.fit_axis_pca(pts)
+            if not ax["is_valid"]:
+                n_out = n                      # 적합 실패 → 섞인 것으로 본다
+            else:
+                c, d = ax["centroid"], ax["direction"]
+                rel = pts - c
+                radial = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
+                n_out = int((radial > 3.0 * max(ax["radial_rms_mm"], 1.0)
+                             / 1000.0).sum())
+        else:
+            return keep_all
+
+        if n_out < min_points or n_out / n < outlier_frac:
+            return keep_all
+
+    # 섞였다 → 기하 전용 백엔드로 이 영역만 다시 나눈다
+    try:
+        seg = _SEG.segment(None, backend="geom",
+                           table={"xyz": pts,
+                                  "uv": np.zeros((n, 2)),
+                                  "lid": np.array(["R"] * n, dtype=object),
+                                  "seq": np.arange(n)},
+                           g_hat=g_hat, min_plane_points=min_points,
+                           min_linear_points=min_points)
+    except Exception:
+        return keep_all
+
+    labels, names = seg["point_labels"], seg["class_names"]
+    subs = []
+    for cid in np.unique(labels):
+        sub_cls = names.get(int(cid), "background")
+        if sub_cls in _EQ5.IGNORE_CLASSES:
+            continue
+        idx = np.where(labels == cid)[0]
+        if len(idx) >= min_points:
+            subs.append((sub_cls, idx))
+    if len(subs) < 2:
+        return keep_all
+    return subs
+
+
 # =====================================================================
 # 한 장 전체 검측
 # =====================================================================
@@ -164,7 +255,8 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
                   rgb_off=None, seg_backend="gt", seg_kwargs=None,
                   erode_default_px=3, erode_thin_px=1,
                   min_region_points=12, sigma_u_px=0.2,
-                  target_sigma_mm=2.0, flatness_threshold_mm=1.5):
+                  target_sigma_mm=2.0, flatness_threshold_mm=1.5,
+                  split_incoherent=True):
     """
     선검출 결과 + 삼각측량 결과 + 세그멘테이션으로 영역별 검측을 수행한다.
 
@@ -208,21 +300,74 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
 
     # ── 영역별 검측 ──
     results = []
+    n_split = 0
+    n_linear_rescued = 0
     for reg in regions:
-        pts = table["xyz"][reg["idx"]]
-        ev = _EQ5.geometric_evidence(pts, g_hat)
-        fu = _EQ5.fuse_label(reg["class"], ev)
-        final_cls = fu["final_class"]
+        pts_all = table["xyz"][reg["idx"]]
 
-        r = measure_region(pts, final_cls, g_hat, camera_params,
-                           flatness_threshold_mm=flatness_threshold_mm,
-                           sigma_u_px=sigma_u_px,
-                           target_sigma_mm=target_sigma_mm)
-        r["region_id"] = int(reg["class_id"])
-        r["label_fusion"] = {k: v for k, v in fu.items() if k != "note"}
-        r["label_fusion_note"] = fu["note"]
-        r["geom_shape"] = ev["shape"]
-        results.append(r)
+        # ── 선형 부재 우선 정제 ──
+        # 동바리·철근처럼 가는 부재는 마스크가 몇 px 만 밖으로 밀려도 뒤쪽
+        # 벽면 점이 딸려 들어오고, 부재가 가늘어 그 비중이 크다. 그러면 PCA
+        # 형상 판별이 선형에서 평면으로 뒤집히고, "면↔선형은 기하 우선"
+        # 규칙이 올바른 의미 라벨을 버려 부재가 통째로 사라진다
+        # (실측: 마스크 +8px 팽창에서 동바리 288점에 벽 33점이 섞여 소실).
+        # → 의미 라벨이 선형이면 먼저 robust 축 적합으로 오염을 걷어내고,
+        #   성공하면 선형 해석을 유지한다.
+        rescued = False
+        if reg["class"] in _EQ5.LINEAR_VERTICAL_CLASSES:
+            ax0 = _EQ2.fit_axis_ransac(pts_all)
+            cand = pts_all[ax0["inlier_mask"]] if ax0["is_valid"] else None
+            if cand is not None and len(cand) >= min_region_points:
+                # 정제 결과가 **실제로 1D 부재인지** 확인해야 한다.
+                # 축 적합은 평면을 얇게 저민 조각에도 성공한다. 바닥 조각에
+                # 축을 맞추면 축이 면 안에 누워 거의 수평이 되고, 수직도가
+                # 89° 로 나온다(실측: 라벨 오분류 시 동바리 오차 88.79°).
+                # 원통은 3번째 주축에도 두께가 남지만 판 조각은 납작하므로
+                # geometric_evidence 의 선형 판정으로 가려낼 수 있다.
+                ev_c = _EQ5.geometric_evidence(cand, g_hat)
+                if ev_c["shape"] == "linear_vertical":
+                    if ax0.get("inlier_frac", 1.0) < 0.999:
+                        n_linear_rescued += 1
+                    pts_all = cand
+                    rescued = True
+
+        ev0 = _EQ5.geometric_evidence(pts_all, g_hat)
+        if rescued:
+            fu0 = {"semantic_class": reg["class"], "geom_shape": ev0["shape"],
+                   "geom_confidence": round(float(ev0.get("confidence", 0.0)), 3),
+                   "final_class": reg["class"], "source": "semantic",
+                   "agreed": ev0["shape"] == "linear_vertical",
+                   "note": ("선형 부재 — robust 축 적합으로 오염점 제거 후 "
+                            "의미 라벨 유지")}
+        else:
+            fu0 = _EQ5.fuse_label(reg["class"], ev0)
+
+        # 병합된 영역이면 되쪼갠다 (세그멘테이션이 두 부재를 한 라벨로 묶은 경우)
+        parts = ([(fu0["final_class"], np.arange(len(pts_all)))]
+                 if not split_incoherent
+                 else split_incoherent_region(pts_all, fu0["final_class"],
+                                              g_hat, min_points=min_region_points))
+        if len(parts) > 1:
+            n_split += 1
+
+        for part_cls, sub_idx in parts:
+            pts = pts_all[sub_idx]
+            ev = (ev0 if len(parts) == 1
+                  else _EQ5.geometric_evidence(pts, g_hat))
+            fu = (fu0 if len(parts) == 1
+                  else _EQ5.fuse_label(part_cls, ev))
+            final_cls = fu["final_class"]
+
+            r = measure_region(pts, final_cls, g_hat, camera_params,
+                               flatness_threshold_mm=flatness_threshold_mm,
+                               sigma_u_px=sigma_u_px,
+                               target_sigma_mm=target_sigma_mm)
+            r["region_id"] = int(reg["class_id"])
+            r["label_fusion"] = {k: v for k, v in fu.items() if k != "note"}
+            r["label_fusion_note"] = fu["note"]
+            r["geom_shape"] = ev["shape"]
+            r["from_split"] = bool(len(parts) > 1)
+            results.append(r)
 
     measured = [r for r in results if r["status"] == "measured"]
     summary = {
@@ -232,6 +377,8 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
         "classes": sorted({r["class"] for r in results}),
         "label_corrections": sum(1 for r in results
                                  if r["label_fusion"]["source"] == "geometric"),
+        "regions_split": n_split,
+        "linear_members_rescued": n_linear_rescued,
         "flatness_unmeasurable": sum(
             1 for r in measured
             if (r["flatness"] or {}).get("judgement") == "측정불가"),
