@@ -337,6 +337,30 @@ def _grid_smooth_uv(uvw, grid_n=24, window="auto", min_cell_points=3,
     return best
 
 
+def _cluster_raw_depth(uvw, raw_w_mm, cluster_cells_uv, cluster_res_mm,
+                       cell, radius_cells=0.6):
+    """
+    검증된 요철 클러스터의 깊이를 원시 잔차에서 로버스트하게 뽑는다.
+
+    클러스터 전체 외접범위에서 극값을 잡으면, 요철 주변의 평탄한 점들이
+    섞여 깊이가 낮게 나온다. 대신 **잔차가 가장 큰 셀(요철 정점)** 주변
+    좁은 범위만 보고 그 안의 원시 잔차 median 을 쓴다.
+
+    median 을 쓰는 이유: 최대값은 노이즈 한 점에 좌우된다. 현장 σ_Z 는
+    1~2mm 수준이므로 최대값 기반 추정은 그만큼 과대평가된다. 정점 부근은
+    신호가 거의 평탄하므로 median 이 편향 없이 노이즈만 걷어낸다.
+    """
+    if len(cluster_cells_uv) == 0:
+        return 0.0
+    cu, cv = max(cell[0], 1e-6), max(cell[1], 1e-6)
+    peak = cluster_cells_uv[int(np.argmax(np.abs(cluster_res_mm)))]
+    m = ((np.abs(uvw[:, 0] - peak[0]) <= radius_cells * cu) &
+         (np.abs(uvw[:, 1] - peak[1]) <= radius_cells * cv))
+    if m.sum() < 3:
+        return float(abs(cluster_res_mm[int(np.argmax(np.abs(cluster_res_mm)))]))
+    return float(abs(np.median(raw_w_mm[m])))
+
+
 def detect_defects_region(points_3d, plane=None, threshold_mm=1.5,
                           grid_n=24, window="auto", plane_threshold_m=0.004,
                           cluster_eps_mm=30, cluster_min_samples=4):
@@ -404,7 +428,18 @@ def detect_defects_region(points_3d, plane=None, threshold_mm=1.5,
     if clusters:
         vidx = np.concatenate([c['point_idx'] for c in clusters])
         d_uv, d_res = cand_uv[vidx], cand_res[vidx]
-        overall_max, is_pass = float(np.max(np.abs(d_res))), False
+        # 요철 깊이는 평활값이 아니라 **원시 잔차**에서 잰다.
+        #   평활(median)은 검출용 노이즈 억제 수단이고, 창이 요철보다 넓으면
+        #   깊이를 그만큼 깎는다(실측: GT 6mm 융기 → 평활값 3.3mm).
+        #   클러스터로 위치가 이미 검증됐으므로, 그 안에서는 원시 잔차의
+        #   로버스트 극값을 쓰는 편이 정확하고 노이즈에도 안전하다.
+        raw_w_mm = uvw[:, 2] * 1000.0 - float(np.median(smoothed[:, 2] * 1000.0))
+        for c in clusters:
+            c['depth_mm'] = _cluster_raw_depth(
+                uvw, raw_w_mm, cand_uv[c['point_idx']],
+                cand_res[c['point_idx']], cell)
+        overall_max = float(max(c['depth_mm'] for c in clusters))
+        is_pass = False
     else:
         d_uv, d_res = np.empty((0, 2)), np.empty(0)
         overall_max, is_pass = 0.0, True

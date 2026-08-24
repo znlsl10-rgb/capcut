@@ -252,14 +252,21 @@ def assign_points_to_regions(table, label_map, class_names,
 # =====================================================================
 def geometric_evidence(points_3d, g_hat,
                        linear_ratio=0.15, planar_ratio=0.15,
-                       thin_extent_m=0.12, align_deg=30.0):
+                       thin_extent_m=0.12, align_deg=30.0,
+                       min_thickness_ratio=0.02):
     """
     점군 자체가 말하는 형상·자세를 뽑는다 (의미 라벨과 독립).
 
     PCA 고윳값 λ1≥λ2≥λ3 로 형상을 판별한다.
-      선형(1D) : λ2/λ1 이 작고, 횡방향 실제 크기도 작을 것
-                 (벽의 가느다란 조각이 선형으로 오인되지 않도록)
-      평면(2D) : λ3/λ2 가 작을 것
+      선형(1D) : λ2/λ1 이 작고(가늘고 길다), 횡방향 실제 크기도 작으며,
+                 **세 번째 축에도 두께가 있을 것** (λ3/λ2 ≥ min_thickness_ratio)
+      평면(2D) : λ3/λ2 가 작을 것 (납작하다)
+
+    세 번째 조건이 없으면 가느다란 **판 조각**이 선형 부재로 오인된다.
+    실제로 동바리에 가려 갈라진 벽 조각이 그렇게 오분류되어 바닥까지
+    놓치는 연쇄 실패가 있었다. 원통(동바리)은 보이는 반쪽이 깊이 방향으로
+    휘어 λ3 가 살아 있는 반면(실측 λ3/λ2 ≈ 0.144), 판 조각은 납작해
+    λ3 가 노이즈 수준이다(실측 0.0004). 약 400배 차이라 분리가 확실하다.
 
     Returns
     -------
@@ -283,8 +290,11 @@ def geometric_evidence(points_3d, g_hat,
     r32 = lam[2] / lam[1] if lam[1] > 1e-18 else 1.0
     g = _EQ3.normalize(g_hat)
 
-    if r21 < linear_ratio and np.sqrt(max(lam[1], 0.0)) < thin_extent_m:
-        # 1D 선형 부재
+    out["thickness_ratio"] = float(r32)
+    if (r21 < linear_ratio
+            and np.sqrt(max(lam[1], 0.0)) < thin_extent_m
+            and r32 >= min_thickness_ratio):
+        # 1D 선형 부재 (가늘고 길며, 3번째 축에도 두께가 있음 = 원통)
         axis = vt[0] / np.linalg.norm(vt[0])
         th = _EQ3.measure_from_gravity(axis, g, "axis_vertical")
         out.update(shape="linear_vertical" if th < align_deg else "linear_oblique",

@@ -169,6 +169,7 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
     N = len(pts)
     labels = np.full(N, -1, dtype=np.int32)
     remaining = np.arange(N)
+    deferred = []            # 평면으로 확정되지 않아 선형 단계로 넘길 점
     class_names, next_id = {}, 0
 
     # ── 1~2. 순차 RANSAC 평면 추출 ──
@@ -196,10 +197,11 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
             cls = {"plane_vertical": "wall",
                    "plane_horizontal": "floor"}.get(ev["shape"])
             if cls is None:
-                # 평면으로 확정되지 않은 덩어리는 소비하지 않는다.
-                # 얇은 원통(동바리)은 반경(~24mm)이 평면 임계(10mm)와
-                # 비슷해 RANSAC inlier 로 잡히지만 실제로는 선형 부재이므로,
-                # 여기서 소비해 버리면 아래 선형 단계에 도달하지 못한다.
+                # 평면으로 확정되지 않은 덩어리(얇은 원통 등)는 라벨을 붙이지
+                # 않고 선형 단계로 넘긴다. 평면 후보에서는 빼야 다음 회차가
+                # 같은 점을 다시 집어 무한히 맴돌지 않는다.
+                deferred.append(gidx)
+                consumed.append(gidx)
                 continue
             labels[gidx] = next_id
             class_names[next_id] = cls
@@ -207,13 +209,17 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
             consumed.append(gidx)
 
         if not consumed:
-            break                            # 이번 회차에 확정된 평면 없음 → 종료
+            # 이번 회차 inlier 가 어떤 그룹도 이루지 못함(산발적) → 통째로 보류
+            deferred.append(inl_global)
+            consumed.append(inl_global)
         drop = np.concatenate(consumed)
         remaining = np.setdiff1d(remaining, drop, assume_unique=False)
 
-    # ── 3~4. 잔여 점에서 선형 부재 ──
-    for grp in _spatial_groups(pts[remaining], cluster_eps_m, min_linear_points):
-        gidx = remaining[grp]
+    # ── 3~4. 잔여 점 + 보류 점에서 선형 부재 ──
+    leftover = (np.union1d(remaining, np.concatenate(deferred))
+                if deferred else remaining)
+    for grp in _spatial_groups(pts[leftover], cluster_eps_m, min_linear_points):
+        gidx = leftover[grp]
         ev = _EQ5.geometric_evidence(pts[gidx], g_hat)
         if ev["shape"] != "linear_vertical":
             continue
