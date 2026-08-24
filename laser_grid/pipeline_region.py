@@ -41,6 +41,7 @@ _EQ2 = _load("eq2_plane_fit")
 _EQ3 = _load("eq3_orientation")
 _EQ4 = _load("eq4_flatness_line")
 _EQ5 = _load("eq5_region_assign")
+_EQ6 = _load("eq6_straightedge")
 _SEG = _load("C_영역분할")
 
 # 평활도 허용 기준 (PDF 1.2 표: 노출 콘크리트 3m당 7mm, 미장 1m당 10mm 등).
@@ -115,29 +116,42 @@ def measure_region(points_3d, cls, g_hat, camera_params,
                                   target_sigma_mm=target_sigma_mm)
     out["uncertainty"] = unc
 
-    # ── 평활도 (면내 좌표계) ──
+    # ── 평활도 ──
+    # 두 가지를 함께 낸다. 쓰임이 다르다.
+    #   eq4 : 요철의 위치·개수·깊이를 찾는다 (어디가 문제인지)
+    #   eq6 : KCS 가 규정한 직선자 처짐량으로 판정한다 (합격인지)
+    # 전역 평면 잔차(eq4)로는 시방 판정을 할 수 없다. 넓은 면이 완만히
+    # 휘면 잔차는 크지만 3m 자에는 안 걸리고, 좁고 급한 굴곡은 그 반대다.
     fd = _EQ4.detect_defects_region(pts, plane=plane,
                                     threshold_mm=flatness_threshold_mm)
-    tol = FLATNESS_TOL_MM.get(cls, 7.0)
     flat = {"applicable": True,
-            "max_dev_mm": round(fd["overall_max_dev_mm"], 3),
+            "defect_max_dev_mm": round(fd["overall_max_dev_mm"], 3),
             "rms_dev_mm": round(fd["rms_dev_mm"], 3),
             "raw_max_dev_mm": round(fd["raw_max_dev_mm"], 3),
             "defect_clusters": len(fd["verified_clusters"]),
             "defect_count": fd["defect_count"],
-            "tolerance_mm": tol,
             "reject_reason": fd.get("reject_reason")}
+
+    kcs = _EQ6.judge_kcs_flatness(
+        pts, cls, plane=plane,
+        sigma_normal_mm=(None if unc["flatness_measurable"]
+                         else unc["sigma_normal_mm"]),
+        target_sigma_mm=target_sigma_mm)
+    flat["kcs"] = kcs
+    flat["judgement"] = kcs["judgement"]
+    flat["is_pass"] = kcs["is_pass"]
+    if kcs["checks"]:
+        c0 = max(kcs["checks"], key=lambda x: x.get("ratio") or 0.0)
+        flat["straightedge_length_m"] = c0["length_m"]
+        flat["max_gap_mm"] = c0["max_gap_mm"]
+        flat["upper_estimate_mm"] = c0["upper_estimate_mm"]
+        flat["tolerance_mm"] = c0["tolerance_mm"]
     if not unc["flatness_measurable"]:
-        # 법선 방향 불확실도가 목표(±2mm)를 넘으면 요철 유무를 신뢰할 수 없다.
-        # 값은 참고로 남기되 판정은 하지 않는다.
-        flat["judgement"] = "측정불가"
         flat["note"] = (f"법선방향 불확실도 σ_n={unc['sigma_normal_mm']}mm > "
                         f"목표 {target_sigma_mm}mm "
                         f"(Z={unc['z_mean_m']}m, 입사각 {unc['incidence_deg']}°)")
-    else:
-        flat["judgement"] = ("합격" if fd["overall_max_dev_mm"] <= tol
-                             else "기준초과")
-        flat["is_pass"] = bool(fd["overall_max_dev_mm"] <= tol)
+    elif kcs.get("note"):
+        flat["note"] = kcs["note"]
     out["flatness"] = flat
     out["status"] = "measured"
     return out
@@ -360,7 +374,7 @@ def format_report(result):
                      f"침식 {st['eroded_away']}, 깊이불연속 {st['discontinuity']})")
     lines.append("")
     hdr = (f"  {'클래스':<14}{'검측':<10}{'각도(°)':>9}{'판정':>10}"
-           f"{'평활 최대(mm)':>14}{'평활판정':>10}{'σ_n(mm)':>9}{'점수':>7}")
+           f"{'자처짐(mm)':>12}{'평활판정':>10}{'σ_n(mm)':>9}{'점수':>7}")
     lines.append(hdr)
     lines.append("  " + "-" * (len(hdr) - 2))
     kind_ko = {"plane_vertical": "수직도", "plane_horizontal": "수평도",
@@ -368,18 +382,19 @@ def format_report(result):
     for r in result["regions"]:
         if r["status"] != "measured":
             lines.append(f"  {r['class']:<14}{'기각':<10}"
-                         f"{'-':>9}{'-':>10}{'-':>14}{'-':>10}{'-':>9}"
+                         f"{'-':>9}{'-':>10}{'-':>12}{'-':>10}{'-':>9}"
                          f"{r['n_points']:>7}   ← {r['reject_reason']}")
             continue
         j = r["judge"] or {}
         verdict = "합격" if j.get("is_pass") else "기준초과"
         f = r["flatness"] or {}
-        fmax = (f"{f['max_dev_mm']:.2f}" if f.get("applicable") else "N/A")
+        fmax = (f"{f.get('max_gap_mm', 0.0):.2f}" if f.get("applicable")
+                else "N/A")
         fjud = f.get("judgement", "N/A") if f.get("applicable") else "N/A"
         sn = r["uncertainty"]["sigma_normal_mm"]
         lines.append(f"  {r['class']:<14}{kind_ko.get(r['kind'], r['kind']):<10}"
                      f"{r['theta_deg']:>9.4f}{verdict:>10}"
-                     f"{fmax:>14}{fjud:>10}{sn:>9.2f}{r['n_points']:>7}")
+                     f"{fmax:>12}{fjud:>10}{sn:>9.2f}{r['n_points']:>7}")
         if r["label_fusion"]["source"] == "geometric":
             lines.append(f"      ↳ 라벨 교정: {r['label_fusion_note']}")
         if f.get("judgement") == "측정불가":

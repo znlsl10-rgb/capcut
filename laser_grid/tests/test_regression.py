@@ -182,11 +182,17 @@ def test_region_pipeline():
                   f"(정답 {gt[key]}°) 오차 {err:.4f}° ≤ 0.5°", err <= 0.5)
 
         w = best.get("wall")
-        if w and w["flatness"]["applicable"]:
-            fm = w["flatness"]["max_dev_mm"]
-            check(f"[{backend}] 벽 요철 검출 {fm:.2f}mm "
-                  f"(정답 {gt['wall_bump_mm']}mm, 과소보고 한계 내)",
-                  0.5 * gt["wall_bump_mm"] <= fm <= 1.5 * gt["wall_bump_mm"])
+        f = (w or {}).get("flatness") or {}
+        if f.get("applicable"):
+            gap = f.get("max_gap_mm", 0.0)
+            up = f.get("upper_estimate_mm", gap)
+            bump = gt["wall_bump_mm"]
+            # 자 처짐량은 요철 폭이 분해능보다 좁으면 하한값이 된다.
+            # 참값이 [처짐량, 상한] 범위 안에 들어오는지를 본다.
+            check(f"[{backend}] 벽 자 처짐 {gap:.2f}mm ~ 상한 {up:.2f}mm 가 "
+                  f"정답 {bump}mm 를 포괄", gap <= bump * 1.15 and up >= bump * 0.7)
+            check(f"[{backend}] 벽 평활도 판정 = {f['judgement']}",
+                  f["judgement"] in ("합격", "판정보류(분해능)"))
 
 
 def test_boundary_rejection():

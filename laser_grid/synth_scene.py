@@ -415,11 +415,14 @@ def score(scene, result):
                      f"정답 {gt[key]:5.2f}°  오차 {err:6.4f}°  "
                      f"{'✓' if ok else '✗'}{extra}")
     w = got.get("wall")
-    if w and (w["flatness"] or {}).get("applicable"):
-        fm = w["flatness"]["max_dev_mm"]
-        lines.append(f"    {'wall':8s} 평활도  측정 최대이탈 {fm:.2f}mm  "
-                     f"정답 융기 {gt['wall_bump_mm']:.1f}mm  "
-                     f"({w['flatness']['judgement']})")
+    f = (w or {}).get("flatness") or {}
+    if f.get("applicable"):
+        lines.append(
+            f"    {'wall':8s} 평활도  자 처짐 {f.get('max_gap_mm', 0):.2f}mm "
+            f"(상한 {f.get('upper_estimate_mm', 0):.2f}mm, 허용 "
+            f"{f.get('tolerance_mm', 0)}mm) / eq4 요철깊이 "
+            f"{f.get('defect_max_dev_mm', 0):.2f}mm  "
+            f"정답 융기 {gt['wall_bump_mm']:.1f}mm → {f['judgement']}")
     lines.append(f"  → {'전체 통과' if all_ok else '실패 항목 있음'}")
     return "\n".join(lines)
 
