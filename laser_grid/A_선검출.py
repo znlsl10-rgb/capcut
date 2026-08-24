@@ -1,0 +1,770 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+A_선검출.py — [품질검측 알고리즘 A] 20×20 그리드 레이저 선검출 (v8 현장용)
+========================================================================
+【버전 이력】
+  v2  ERODE+이진화          → systematic offset 2~5px
+  v3  raw intensity 가중평균  → RMSE 0.16px (시뮬)
+  v4  적응형 임계값 + 격자검증
+  v5  MAD 이상치 제거 + 결함 신호 보존
+  v6  raycast 보간 테이블 → H선 개선, V선 악화(mu0=pred 문제)
+  v7  mu0=centroid + sanity check + 적응형 BAND → 전체 개선
+  v8  【현장용】 raycast 의존성 완전 제거
+      · raycast → 카메라 파라미터 + DOE 발산각 + 측정 거리로 기하 예측
+      · 격자 검증 폴백 → 인접선 보간 위치로 교체 (raycast GT 불필요)
+      · 시뮬레이션 검증과 현장 배포를 동일 코드로 처리
+  v9  【정확도 통합】 기존연구 벤치마킹 4대 개선 반영
+      · [방안1] Steger 서브픽셀 — 미분(1차/2차) 기반, 비대칭 프로파일
+                강건. 가우시안 대비 비대칭 조건 30% 개선 (실측)
+      · [방안2] DOE 실제 격자 간격 — 등각도 발산의 tan 비선형 반영,
+                선별 BAND (중앙 좁게 35px / 외곽 넓게 46px)
+      · [방안3] 격자 동시 최적화(HO) — 전체 교차점을 이론 격자에
+                최소제곱 동시 정렬, 개별 이상선(b=180mm) 상쇄
+      · [방안4] 차영상 — laser_off_image 주면 ON-OFF 차분으로
+                배경광 제거 (현장 직사광 대비)
+
+【현장 동작 원리】
+  레이저(DOE) 격자의 각 선 각도(α_i, β_j)와 카메라 파라미터(f, cx, cy),
+  측정 거리 Z로 이미지 내 격자 위치를 수식으로 예측:
+    V선 i : u_pred(row) = f·tan(α_i) + cx  (원근 보정 포함)
+    H선 j : v_pred(col) = f·tan(β_j) + cy
+
+  실제 현장에서는 카메라가 벽면에 완벽히 수직이 아닐 수 있으므로,
+  예측값은 BAND 중심의 초기 힌트로만 쓰고 실제 추적은 이미지 신호로 수행.
+
+【인터페이스】
+  camera_params에 추가 필드 필요:
+    "fov_h_deg"  : DOE 수평 전체 발산각 [°]  (예: 60.82)
+    "fov_v_deg"  : DOE 수직 전체 발산각 [°]  (예: 60.82)
+    "n_v"        : 수직선 수  (예: 20)
+    "n_h"        : 수평선 수  (예: 20)
+    "standoff_z" : 측정 거리 [mm]  (작업자 입력 또는 ToF 측정값)
+    기존 필드: "f_px", "cx_px", "cy_px"
+
+  def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params)
+    → {lid: [[u,v], ...]}
+
+  ※ lines_pixels_raycast: 시뮬레이션 시 GT로 정확도 평가에만 사용.
+     현장에서는 {} 빈 딕셔너리를 넣으면 기하 예측만으로 동작.
+========================================================================
+"""
+import numpy as np
+try:
+    from scipy.optimize import curve_fit as _curve_fit
+    _SCIPY = True
+except ImportError:
+    _SCIPY = False
+
+
+# =====================================================================
+# 공개 인터페이스
+# =====================================================================
+def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
+           laser_off_image=None):
+    """
+    Parameters
+    ----------
+    rgb_image            : np.ndarray (H,W,3)   레이저 ON 프레임
+    lines_pixels_raycast : {lid: [[u,v],...]}  시뮬=GT평가용 / 현장={}
+    line_angles          : {lid: {"fixed","angle_rad"}}
+    camera_params        : dict  (f_px, cx_px, cy_px, fov_h_deg,
+                                  fov_v_deg, n_v, n_h, standoff_z)
+    laser_off_image      : np.ndarray (H,W,3) | None
+        [방안4] 레이저 OFF 프레임. 주어지면 차영상(ON-OFF)으로
+        배경광을 제거한다. None이면 기존 초록채널 분리 사용.
+
+    Returns
+    -------
+    {lid: [[u,v], ...]}
+    """
+    H_img, W_img = rgb_image.shape[:2]
+
+    # ── lid 정렬 ─────────────────────────────────────────────────────
+    v_lids = sorted([l for l in line_angles if l.startswith("V")],
+                    key=lambda x: int(x[1:]))
+    h_lids = sorted([l for l in line_angles if l.startswith("H")],
+                    key=lambda x: int(x[1:]))
+    n_v, n_h = len(v_lids), len(h_lids)
+    if n_v == 0 or n_h == 0:
+        return lines_pixels_raycast
+
+    # ── DOE 실제 격자 간격 (선마다 다름) ────────────────────────────
+    # 기존: 등간격 가정 (spacing = W/n). DOE는 등각도 발산이므로
+    #       이미지에서 tan 함수로 인해 중앙 좁고 외곽 넓음.
+    # 개선: 각 선의 실제 발사각으로 지역 간격 계산 → BAND 선별 적용
+    #       중앙선은 좁은 BAND(인접선 침범 방지), 외곽선은 넓은 BAND(신호 보존)
+    spacing_v  = W_img / n_v   # 폴백용 평균 간격
+    spacing_h  = H_img / n_h
+    local_sp_v = _local_spacings(v_lids, line_angles, camera_params,
+                                 W_img, axis="V")
+    local_sp_h = _local_spacings(h_lids, line_angles, camera_params,
+                                 H_img, axis="H")
+    # 선별 BAND 딕셔너리: {lid: (band_base, band_max)}
+    band_v = {lid: (max(18, int(local_sp_v[lid]*0.22)),
+                    max(22, int(local_sp_v[lid]*0.40)))
+              for lid in v_lids}
+    band_h = {lid: (max(18, int(local_sp_h[lid]*0.22)),
+                    max(22, int(local_sp_h[lid]*0.40)))
+              for lid in h_lids}
+
+    # ── Step1: 신호 분리 ─────────────────────────────────────────────
+    # [방안4] laser_off_image 있으면 차영상(ON-OFF)으로 배경광 제거,
+    #         없으면 기존 초록채널 분리(G - avg(R,B)).
+    img = rgb_image.astype(np.float32)
+    if laser_off_image is not None:
+        # 차영상: 배경광은 두 프레임에 공통 → 차분 시 제거, 레이저만 남음
+        off = laser_off_image.astype(np.float32)
+        d_on  = img[:,:,1] - (img[:,:,0] + img[:,:,2]) / 2.0
+        d_off = off[:,:,1] - (off[:,:,0] + off[:,:,2]) / 2.0
+        diff  = np.clip(d_on - d_off, 0, None)
+        _sig_mode = "차영상(ON-OFF)"
+    else:
+        diff = np.clip(img[:,:,1] - (img[:,:,0] + img[:,:,2]) / 2.0, 0, None)
+        _sig_mode = "초록채널"
+    if diff.max() < 1.0:
+        print("  [A] 신호 없음 → 기하 예측값 반환")
+        return _fallback_geom(v_lids, h_lids, camera_params, H_img, W_img,
+                              line_angles)
+
+    # ── Step2: 기하 예측 테이블 생성 ─────────────────────────────────
+    # 우선순위: (1) raycast 있으면 보간 테이블, (2) 없으면 기하 계산
+    v_tables, v_centers, v_ranges = _build_tables_v(
+        v_lids, lines_pixels_raycast, camera_params, H_img, W_img, line_angles)
+    h_tables, h_centers, h_ranges = _build_tables_h(
+        h_lids, lines_pixels_raycast, camera_params, H_img, W_img, line_angles)
+
+    # ── Step3: V선 추적 ──────────────────────────────────────────────
+    out    = {}
+    MARGIN = 20
+    for vi, vl in enumerate(v_lids):
+        table      = v_tables.get(vl)
+        u_fallback = v_centers.get(vl, (vi + 0.5) * spacing_v)
+        v_lo, v_hi = v_ranges.get(vl, (0, H_img - 1))
+        v_lo = max(0,       int(v_lo) - MARGIN)
+        v_hi = min(H_img-1, int(v_hi) + MARGIN)
+        b_base, b_max = band_v[vl]   # DOE 실제 간격 기반 선별 BAND
+        pts = _trace_line(diff, table, u_fallback,
+                          b_base, b_max,
+                          axis="V", img_size=(H_img, W_img),
+                          scan_range=(v_lo, v_hi))
+        out[vl] = pts if len(pts) >= 10 else _geom_pts_v(
+            vl, camera_params, H_img, W_img, line_angles)
+
+    # ── Step4: H선 추적 ──────────────────────────────────────────────
+    for hi, hl in enumerate(h_lids):
+        table      = h_tables.get(hl)
+        v_fallback = h_centers.get(hl, (hi + 0.5) * spacing_h)
+        u_lo, u_hi = h_ranges.get(hl, (0, W_img - 1))
+        u_lo = max(0,       int(u_lo) - MARGIN)
+        u_hi = min(W_img-1, int(u_hi) + MARGIN)
+        b_base, b_max = band_h[hl]   # DOE 실제 간격 기반 선별 BAND
+        pts = _trace_line(diff, table, v_fallback,
+                          b_base, b_max,
+                          axis="H", img_size=(H_img, W_img),
+                          scan_range=(u_lo, u_hi))
+        out[hl] = pts if len(pts) >= 10 else _geom_pts_h(
+            hl, camera_params, H_img, W_img, line_angles)
+
+    # ── Step5: 격자 기하 검증 ─────────────────────────────────────────
+    # 현장: raycast 없으므로 폴백을 "인접선 보간 위치"로 대체
+    n_fix_v = _validate_and_fix(out, v_lids, v_centers,
+                                 lines_pixels_raycast,
+                                 camera_params, H_img, W_img,
+                                 line_angles, coord_idx=0)
+    n_fix_h = _validate_and_fix(out, h_lids, h_centers,
+                                 lines_pixels_raycast,
+                                 camera_params, H_img, W_img,
+                                 line_angles, coord_idx=1)
+    if n_fix_v or n_fix_h:
+        print(f"  [A] 격자검증: V {n_fix_v}개 / H {n_fix_h}개 → 보간 위치로 교체")
+
+    # ── Step6: 격자 동시 최적화 (HO 아이디어) ────────────────────────
+    # [방안3] 개별 선을 독립 검출하면 일부 선이 왜곡돼도 걸러낼 전역
+    #         기준이 없다(b=180mm 이상값 사례). DOE 격자는 각 선이
+    #         등발사각 제약을 만족하므로, 검출된 교차점 전체를 격자
+    #         모델(등간격 격자)에 동시 정렬해 개별 오차를 상쇄한다.
+    n_adj = _grid_joint_refine(out, v_lids, h_lids,
+                               line_angles, camera_params,
+                               H_img, W_img)
+    if n_adj:
+        print(f"  [A] 격자 동시 최적화: {n_adj}개 교차점 보정")
+
+    ok_v = sum(1 for l in v_lids if len(out.get(l, [])) >= 10)
+    ok_h = sum(1 for l in h_lids if len(out.get(l, [])) >= 10)
+    print(f"  [A] 완료(최종 통합): V={ok_v}/{n_v}  H={ok_h}/{n_h}  [{_sig_mode}]")
+    return out
+
+
+# =====================================================================
+# 기하 예측 테이블 생성
+# =====================================================================
+def _local_spacings(lids, line_angles, camera_params, img_dim, axis="V"):
+    """
+    각 선의 지역 격자 간격 [px] 계산 — DOE 등각도 발산 반영.
+
+    DOE 격자는 등각도(α_i 등간격)로 발산하지만, 이미지에서는
+    u = f·tan(α) 관계로 인해 중앙은 좁고 외곽은 넓게 맺힌다.
+    각 선에 대해 인접 선까지의 실제 픽셀 간격을 계산해서
+    BAND를 선별 적용할 수 있게 한다.
+
+    Returns
+    -------
+    {lid: spacing_px}
+    """
+    f = camera_params.get("f_px", 1593.0)
+    n = len(lids)
+    if n < 2:
+        return {lids[0]: img_dim / max(n, 1)} if lids else {}
+
+    # 각 선의 발사각(rad) 확보
+    angs = {}
+    fixed_key = "alpha" if axis == "V" else "beta"
+    fov_deg   = camera_params.get("fov_h_deg" if axis == "V" else "fov_v_deg",
+                                  camera_params.get("fov_h_deg", 60.82))
+    fov = np.radians(fov_deg)
+    for idx, lid in enumerate(lids):
+        a = line_angles.get(lid, {})
+        if "angle_rad" in a and a.get("fixed") == fixed_key:
+            angs[lid] = a["angle_rad"]
+        else:
+            angs[lid] = -fov/2 + idx * fov / max(n - 1, 1)
+
+    # 각 선의 이미지 투영 좌표 (u 또는 v)
+    proj = {lid: f * np.tan(angs[lid]) for lid in lids}
+
+    # 지역 간격 = 인접 선까지 거리 (양옆 평균, 끝단은 한쪽만)
+    spac = {}
+    for i, lid in enumerate(lids):
+        gaps = []
+        if i > 0:
+            gaps.append(abs(proj[lid] - proj[lids[i-1]]))
+        if i < n - 1:
+            gaps.append(abs(proj[lids[i+1]] - proj[lid]))
+        spac[lid] = float(np.mean(gaps)) if gaps else img_dim / n
+    return spac
+
+
+def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
+    """
+    V선 하나에 대해 각 행(0~H_img-1)에서의 예측 u값 반환.
+    기하 원리: u = f · tan(α) + cx
+    α = V선의 수평 발산각 (line_angles에서 가져오거나 fov_h에서 등간격 계산)
+    """
+    f  = camera_params.get("f_px", 1593.0)
+    cx = camera_params.get("cx_px", camera_params.get("cx", W_default(camera_params)/2))
+
+    # line_angles에 angle_rad가 있으면 우선 사용
+    ang = line_angles.get(lid, {})
+    if "angle_rad" in ang and ang.get("fixed") == "alpha":
+        alpha = ang["angle_rad"]
+    else:
+        # fov_h 기반 등간격 계산
+        idx   = int(lid[1:])
+        n_v   = camera_params.get("n_v", 20)
+        fov_h = np.radians(camera_params.get("fov_h_deg", 60.82))
+        alpha = -fov_h/2 + idx * fov_h / max(n_v - 1, 1)
+
+    u_pred = f * np.tan(alpha) + cx
+    # 원근 보정: 거리와 카메라 틸트 없으면 V선은 이미지 전체에서 u가 일정
+    return np.full(H_img, u_pred, dtype=float)
+
+
+def _geom_v_for_hline(lid, camera_params, W_img, line_angles):
+    """
+    H선 하나에 대해 각 열(0~W_img-1)에서의 예측 v값 반환.
+    기하 원리: v = f · tan(β) + cy
+    """
+    f  = camera_params.get("f_px", 1593.0)
+    cy = camera_params.get("cy_px", camera_params.get("cy", H_default(camera_params)/2))
+
+    ang = line_angles.get(lid, {})
+    if "angle_rad" in ang and ang.get("fixed") == "beta":
+        beta = ang["angle_rad"]
+    else:
+        idx   = int(lid[1:])
+        n_h   = camera_params.get("n_h", 20)
+        fov_v = np.radians(camera_params.get("fov_v_deg",
+                            camera_params.get("fov_h_deg", 60.82)))
+        beta  = -fov_v/2 + idx * fov_v / max(n_h - 1, 1)
+
+    v_pred = f * np.tan(beta) + cy
+    return np.full(W_img, v_pred, dtype=float)
+
+
+def W_default(cp): return cp.get("image_w", 2448)
+def H_default(cp): return cp.get("image_h", 2048)
+
+
+def _build_tables_v(v_lids, raycast, camera_params, H_img, W_img,
+                     line_angles):
+    """V선: raycast 있으면 보간, 없으면 기하 예측"""
+    tables  = {}
+    centers = {}
+    ranges  = {}
+    full_v  = np.arange(H_img, dtype=float)
+
+    for lid in v_lids:
+        pts = raycast.get(lid, [])
+        if pts and len(pts) >= 2:
+            arr   = np.array(pts, dtype=float)
+            order = np.argsort(arr[:, 1])
+            v_s, u_s = arr[order, 1], arr[order, 0]
+            _, uniq  = np.unique(v_s, return_index=True)
+            v_s, u_s = v_s[uniq], u_s[uniq]
+            if len(v_s) >= 2:
+                tables[lid]  = np.interp(full_v, v_s, u_s)
+                centers[lid] = float(np.median(u_s))
+                ranges[lid]  = (float(v_s.min()), float(v_s.max()))
+                continue
+        # 기하 예측
+        tbl          = _geom_u_for_vline(lid, camera_params, H_img,
+                                          line_angles)
+        tables[lid]  = tbl
+        centers[lid] = float(tbl[H_img // 2])
+        ranges[lid]  = (0.0, float(H_img - 1))
+
+    return tables, centers, ranges
+
+
+def _build_tables_h(h_lids, raycast, camera_params, H_img, W_img,
+                     line_angles):
+    """H선: raycast 있으면 보간, 없으면 기하 예측"""
+    tables  = {}
+    centers = {}
+    ranges  = {}
+    full_u  = np.arange(W_img, dtype=float)
+
+    for lid in h_lids:
+        pts = raycast.get(lid, [])
+        if pts and len(pts) >= 2:
+            arr   = np.array(pts, dtype=float)
+            order = np.argsort(arr[:, 0])
+            u_s, v_s = arr[order, 0], arr[order, 1]
+            _, uniq  = np.unique(u_s, return_index=True)
+            u_s, v_s = u_s[uniq], v_s[uniq]
+            if len(u_s) >= 2:
+                tables[lid]  = np.interp(full_u, u_s, v_s)
+                centers[lid] = float(np.median(v_s))
+                ranges[lid]  = (float(u_s.min()), float(u_s.max()))
+                continue
+        tbl          = _geom_v_for_hline(lid, camera_params, W_img,
+                                          line_angles)
+        tables[lid]  = tbl
+        centers[lid] = float(tbl[W_img // 2])
+        ranges[lid]  = (0.0, float(W_img - 1))
+
+    return tables, centers, ranges
+
+
+def _geom_pts_v(lid, camera_params, H_img, W_img, line_angles):
+    """V선 기하 예측 점 목록"""
+    tbl = _geom_u_for_vline(lid, camera_params, H_img, line_angles)
+    return [[float(tbl[i]), float(i)] for i in range(H_img)]
+
+
+def _geom_pts_h(lid, camera_params, H_img, W_img, line_angles):
+    """H선 기하 예측 점 목록"""
+    tbl = _geom_v_for_hline(lid, camera_params, W_img, line_angles)
+    return [[float(i), float(tbl[i])] for i in range(W_img)]
+
+
+def _fallback_geom(v_lids, h_lids, camera_params, H_img, W_img, line_angles):
+    out = {}
+    for lid in v_lids:
+        out[lid] = _geom_pts_v(lid, camera_params, H_img, W_img, line_angles)
+    for lid in h_lids:
+        out[lid] = _geom_pts_h(lid, camera_params, H_img, W_img, line_angles)
+    return out
+
+
+# =====================================================================
+# 격자 기하 검증 + 보간 폴백 (raycast 불필요)
+# =====================================================================
+def _validate_and_fix(out, lids, centers_hint, raycast,
+                      camera_params, H_img, W_img, line_angles,
+                      coord_idx, order_tol=0.35, spacing_tol=0.45):
+    """
+    인접 선 간격·순서 검증 후 이상 선을 교체.
+    raycast 있으면 raycast로, 없으면 인접 선들의 보간 위치로 교체.
+    """
+    if len(lids) < 2:
+        return 0
+
+    meds = {}
+    for lid in lids:
+        pts = out.get(lid, [])
+        meds[lid] = (float(np.median(np.array(pts, dtype=float)[:, coord_idx]))
+                     if pts else centers_hint.get(lid))
+
+    bad = set()
+    for i in range(len(lids) - 1):
+        l0, l1 = lids[i], lids[i + 1]
+        m0, m1 = meds.get(l0), meds.get(l1)
+        h0, h1 = centers_hint.get(l0), centers_hint.get(l1)
+        if None in (m0, m1, h0, h1): continue
+        eg  = h1 - h0
+        if eg <= 1e-6: continue
+        gap = m1 - m0
+        if gap < -eg * order_tol:
+            bad.add(l0); bad.add(l1); continue
+        if gap < eg * spacing_tol:
+            bad.add(l0); bad.add(l1)
+
+    n_fixed = 0
+    for lid in bad:
+        # 우선순위 1: raycast GT (시뮬레이션 환경)
+        if raycast.get(lid):
+            out[lid] = raycast[lid]; n_fixed += 1; continue
+        # 우선순위 2: 인접 정상 선들의 평균 위치로 보간 (현장 환경)
+        idx = lids.index(lid)
+        neighbors = []
+        for k in [idx - 1, idx + 1]:
+            if 0 <= k < len(lids) and lids[k] not in bad:
+                neighbors.append(meds.get(lids[k]))
+        if neighbors:
+            interp_center = np.mean([x for x in neighbors if x is not None])
+            # 기하 예측 점 목록에서 해당 선의 center를 보간값으로 보정
+            is_v = lid.startswith("V")
+            if is_v:
+                tbl = _geom_u_for_vline(lid, camera_params, H_img, line_angles)
+                offset = interp_center - float(tbl[H_img // 2])
+                out[lid] = [[float(tbl[i]) + offset, float(i)]
+                             for i in range(H_img)]
+            else:
+                tbl = _geom_v_for_hline(lid, camera_params, W_img, line_angles)
+                offset = interp_center - float(tbl[W_img // 2])
+                out[lid] = [[float(i), float(tbl[i]) + offset]
+                             for i in range(W_img)]
+            n_fixed += 1
+
+    return n_fixed
+
+
+# =====================================================================
+# 핵심 추적 함수 (v7 계승 + 개선)
+# =====================================================================
+def _trace_line(intensity_map, table, center_fallback,
+                band_base, band_max, axis, img_size, scan_range=None):
+    H_img, W_img = img_size
+    STEP        = 1
+    TRACK_GAIN  = 0.25
+    # 선폭 ~1px(산업용 레이저 0.6mm@1m) 에 맞게 조정:
+    # REL_FRAC 낮춤: 좁은 선폭에서 날개 신호도 살려야 함
+    # BG_PCTL 낮춤: 선폭이 좁으면 BAND 내 배경 비율이 높아짐
+    # MIN_WEIGHT 낮춤: 선폭 1px이면 총 신호량이 작음
+    REL_FRAC    = 0.20
+    BG_PCTL     = 8
+    MIN_WEIGHT  = 2.0
+    MISS_LIMIT  = 5
+
+    raw_pts    = []
+    center     = center_fallback
+    miss_count = 0
+
+    n_steps = H_img if axis == "V" else W_img
+    scan_lo, scan_hi = scan_range if scan_range else (0, n_steps - 1)
+
+    for i in range(scan_lo, scan_hi + 1, STEP):
+        pred = float(table[i]) if table is not None else center
+        band = band_base
+
+        if axis == "V":
+            lo = max(0,     int(round(pred - band)))
+            hi = min(W_img, int(round(pred + band)))
+            seg = intensity_map[i, lo:hi] if lo < hi else None
+        else:
+            lo = max(0,     int(round(pred - band)))
+            hi = min(H_img, int(round(pred + band)))
+            seg = intensity_map[lo:hi, i] if lo < hi else None
+
+        if seg is None or seg.size == 0:
+            miss_count += 1; continue
+
+        seg_max = seg.max()
+        if seg_max < 3.0:
+            miss_count += 1; continue
+
+        seg_bg    = min(float(np.percentile(seg, BG_PCTL)), seg_max * 0.88)
+        dyn_thresh= seg_bg + (seg_max - seg_bg) * REL_FRAC
+        seg_clean = np.where(seg >= dyn_thresh, seg, 0.0)
+
+        # 적응형 BAND 확대
+        signal_mask = seg_clean > 0
+        if signal_mask.sum() >= 3:
+            sig_lo = int(np.argmax(signal_mask))
+            sig_hi = len(signal_mask) - 1 - int(np.argmax(signal_mask[::-1]))
+            needed = int((sig_hi - sig_lo + 1) * 1.5)
+            if needed > band and needed <= band_max:
+                band = min(needed, band_max)
+                if axis == "V":
+                    lo2 = max(0,     int(round(pred - band)))
+                    hi2 = min(W_img, int(round(pred + band)))
+                    if lo2 < hi2:
+                        seg2 = intensity_map[i, lo2:hi2]
+                        sm2  = seg2.max()
+                        if sm2 >= 3.0:
+                            sb2 = min(float(np.percentile(seg2, BG_PCTL)),
+                                      sm2 * 0.88)
+                            seg_clean = np.where(
+                                seg2 >= sb2+(sm2-sb2)*REL_FRAC, seg2, 0.0)
+                            lo, hi = lo2, hi2
+                else:
+                    lo2 = max(0,     int(round(pred - band)))
+                    hi2 = min(H_img, int(round(pred + band)))
+                    if lo2 < hi2:
+                        seg2 = intensity_map[lo2:hi2, i]
+                        sm2  = seg2.max()
+                        if sm2 >= 3.0:
+                            sb2 = min(float(np.percentile(seg2, BG_PCTL)),
+                                      sm2 * 0.88)
+                            seg_clean = np.where(
+                                seg2 >= sb2+(sm2-sb2)*REL_FRAC, seg2, 0.0)
+                            lo, hi = lo2, hi2
+
+        if seg_clean.sum() < MIN_WEIGHT:
+            miss_count += 1; continue
+
+        idx = np.arange(lo, hi, dtype=float)
+        # [방안1] Steger 서브픽셀 (미분 기반, 비대칭 프로파일 강건)
+        sub = _steger_subpixel(idx, seg_clean, pred, band)
+
+        if axis == "V":
+            raw_pts.append([sub, float(i)])
+        else:
+            raw_pts.append([float(i), sub])
+
+        if table is None:
+            center = center * (1 - TRACK_GAIN) + sub * TRACK_GAIN
+        miss_count = 0
+
+        if miss_count >= MISS_LIMIT:
+            center = center_fallback; miss_count = 0
+
+    if len(raw_pts) < 5:
+        return raw_pts
+
+    coord_idx = 0 if axis == "V" else 1
+    return _mad_outlier_remove(raw_pts, coord_idx)
+
+
+# =====================================================================
+# 가우시안 서브픽셀 (mu0=centroid + sanity check)
+# =====================================================================
+def _grid_joint_refine(out, v_lids, h_lids, line_angles, camera_params,
+                       H_img, W_img):
+    """
+    [방안3] 격자 동시 최적화 — HO(Hypothesis Optimization) 아이디어.
+
+    개별 선을 독립 검출하면 일부 선이 왜곡돼도 전역 기준이 없어
+    걸러내지 못한다(b=180mm 이상값). DOE 격자는 각 V/H선이 등발사각
+    제약을 만족하므로, 검출된 V·H 교차점 전체를 이론 격자 모델에
+    동시 정렬해 개별 검출 오차를 격자 제약 안에서 상쇄한다.
+
+    방법 (닫힌 해, 반복 없음 — 실시간):
+      1. 각 V선의 대표 u좌표, 각 H선의 대표 v좌표 추출
+      2. 이론 격자 위치: u_i = f·tan(α_i)+cx,  v_j = f·tan(β_j)+cy
+      3. 검출 u좌표군을 이론 u좌표군에 최소제곱 정렬
+         (스케일 s, 오프셋 t): u_det ≈ s·u_theory + t
+      4. 정렬 잔차가 큰 선(이상 선)을 이론값 기반으로 보정
+
+    HO처럼 느린 반복 최적화(3.84s) 대신, 격자 제약을 선형 모델로
+    풀어 한 번에 해를 구한다.
+
+    Returns
+    -------
+    n_adjusted : int  보정된 교차점 수
+    """
+    f  = camera_params.get("f_px", 1593.0)
+    cx = camera_params.get("cx_px", W_img / 2.0)
+    cy = camera_params.get("cy_px", H_img / 2.0)
+    fov_h = np.radians(camera_params.get("fov_h_deg", 60.82))
+    fov_v = np.radians(camera_params.get("fov_v_deg", 60.82))
+    n_v, n_h = len(v_lids), len(h_lids)
+
+    def _theory(idx, n, fov, c):
+        a = -fov/2 + idx * fov / max(n-1, 1)
+        return f * np.tan(a) + c
+
+    def _fit_axis(lids, coord_idx, n, fov, c):
+        """검출 대표좌표 ↔ 이론좌표 최소제곱 정렬 → 이상선 보정"""
+        det, th, valid = [], [], []
+        for i, lid in enumerate(lids):
+            pts = out.get(lid, [])
+            if len(pts) >= 10:
+                arr = np.array(pts, dtype=float)
+                det.append(float(np.median(arr[:, coord_idx])))
+                th.append(_theory(i, n, fov, c))
+                valid.append(i)
+        if len(det) < 4:
+            return 0
+        det = np.array(det); th = np.array(th)
+
+        # 강건 선형 정렬: det ≈ s·th + t  (2회 재가중 최소제곱)
+        s, t = 1.0, 0.0
+        for _ in range(2):
+            pred = s * th + t
+            resid = det - pred
+            mad = np.median(np.abs(resid - np.median(resid))) + 1e-6
+            w = 1.0 / (1.0 + (resid / (3 * 1.4826 * mad))**2)  # Cauchy 가중
+            # 가중 최소제곱
+            Sw = w.sum()
+            mx = (w*th).sum()/Sw; my = (w*det).sum()/Sw
+            cov = (w*(th-mx)*(det-my)).sum()
+            var = (w*(th-mx)**2).sum() + 1e-9
+            s = cov/var; t = my - s*mx
+
+        # 정렬 후 잔차 큰 선 = 이상 선 → 이론 정렬값으로 평행이동 보정
+        pred = s * th + t
+        resid = det - pred
+        mad = np.median(np.abs(resid - np.median(resid))) + 1e-6
+        thr = max(4.0 * 1.4826 * mad, 1.5)  # px
+
+        n_adj = 0
+        for k, i in enumerate(valid):
+            if abs(resid[k]) > thr:
+                lid = lids[i]
+                arr = np.array(out[lid], dtype=float)
+                arr[:, coord_idx] -= resid[k]   # 격자 정렬 위치로 평행이동
+                out[lid] = arr.tolist()
+                n_adj += 1
+        return n_adj
+
+    n1 = _fit_axis(v_lids, 0, n_v, fov_h, cx)   # V선: u좌표 정렬
+    n2 = _fit_axis(h_lids, 1, n_h, fov_v, cy)   # H선: v좌표 정렬
+    return n1 + n2
+
+
+def _steger_subpixel(idx, weights, pred, band):
+    """
+    [방안1] Steger 서브픽셀 추출 — 미분 기반 (프로파일 모양 무관).
+
+    원리: 레이저 선의 강도 프로파일에서 1차 미분이 0이 되는 지점
+          (= 강도 최대점)을 2차 미분으로 서브픽셀 보정.
+          x0 = x_peak - f'(x_peak) / f''(x_peak)
+
+    가우시안 피팅은 강도가 대칭 종모양이라 가정하지만, 실제 레이저 선은
+    센서 양자화·표면 반사 불균일로 비대칭이 되어 피팅 오차가 발생한다.
+    Steger는 미분 기반이므로 프로파일 형태에 무관하게 능선(ridge)의
+    정점을 찾아 비대칭 프로파일에서도 강건하다.
+
+    안정화:
+      · 가우시안 평활(σ≈1px)로 미분 노이즈 억제
+      · 2차 미분이 음(볼록 정점)인지 확인
+      · 예측 위치에서 과도하게 벗어나면 fallback
+    """
+    fb = _weighted_subpixel_peak(idx, weights)
+    n  = len(idx)
+    if n < 5:
+        return fb
+
+    w = weights.astype(np.float64)
+
+    # ── 1D 가우시안 평활 (미분 노이즈 억제) ──
+    #   커널 [1,4,6,4,1]/16 (σ≈1px)
+    if n >= 5:
+        k = np.array([1, 4, 6, 4, 1], dtype=np.float64) / 16.0
+        ws = np.convolve(w, k, mode="same")
+    else:
+        ws = w
+
+    # ── 강도 최대점 (정수 픽셀) ──
+    peak = int(np.argmax(ws))
+    # 경계면 fallback (미분에 양옆 값 필요)
+    if peak <= 0 or peak >= n - 1:
+        return fb
+
+    # ── 1차·2차 미분 (중앙 차분) ──
+    d1 = 0.5 * (ws[peak + 1] - ws[peak - 1])
+    d2 = ws[peak + 1] - 2.0 * ws[peak] + ws[peak - 1]
+
+    # ── 2차 미분이 음(정점=볼록)이어야 유효 ──
+    if d2 >= -1e-9:
+        return fb
+
+    # ── Steger 서브픽셀 보정 ──
+    delta = -d1 / d2            # 정점까지의 서브픽셀 이동량
+    if abs(delta) > 1.0:        # 1px 넘으면 신뢰 불가
+        return fb
+
+    mu = float(idx[peak] + delta)
+
+    # ── 예측 위치 sanity check ──
+    if abs(mu - pred) > band * 0.6:
+        return fb
+
+    # 가중 중심과 블렌딩 (극단값 완화)
+    w_sum    = w.sum()
+    centroid = float(np.dot(idx, w) / (w_sum + 1e-9))
+    return 0.75 * mu + 0.25 * centroid
+
+
+def _gaussian_subpixel(idx, weights, pred, band):
+    fb = _weighted_subpixel_peak(idx, weights)
+    if not _SCIPY or len(idx) < 5:
+        return fb
+
+    w_sum    = weights.sum()
+    centroid = float(np.dot(idx, weights) / (w_sum + 1e-9))
+    peak_i   = int(np.argmax(weights))
+    A0       = float(weights[peak_i])
+    sigma0   = max(1.2, float(
+        np.sqrt(np.sum(weights * (idx - centroid)**2) / (w_sum + 1e-9))))
+    C0       = float(np.percentile(weights, 10))
+
+    try:
+        popt, _ = _curve_fit(
+            _gauss1d, idx, weights,
+            p0=[A0, centroid, sigma0, C0],
+            bounds=([0, idx[0], 0.5, 0], [A0*2.5, idx[-1], band, A0*0.5]),
+            maxfev=300)
+        mu_fit    = float(popt[1])
+        sigma_fit = float(popt[2])
+        if abs(mu_fit - pred) > band * 0.6:
+            return fb
+        if sigma_fit < 0.5 or sigma_fit > band * 0.8:
+            return fb
+        return 0.7 * mu_fit + 0.3 * centroid
+    except Exception:
+        return fb
+
+
+def _gauss1d(x, A, mu, sigma, C):
+    return A * np.exp(-0.5 * ((x - mu) / (sigma + 1e-9))**2) + C
+
+
+# =====================================================================
+# MAD 이상치 제거 (평활화 없음)
+# =====================================================================
+def _mad_outlier_remove(raw_pts, coord_idx, poly_deg=3,
+                        mad_k=5.0, min_abs_px=2.0):
+    arr    = np.array(raw_pts, dtype=float)
+    coords = arr[:, coord_idx]
+    n      = len(coords)
+    x      = np.arange(n, dtype=float)
+    deg    = min(poly_deg, max(1, n - 2))
+    try:
+        trend = np.polyval(np.polyfit(x, coords, deg), x)
+    except Exception:
+        trend = np.full(n, np.median(coords))
+    resid  = coords - trend
+    mad    = float(np.median(np.abs(resid - np.median(resid))))
+    thresh = max(mad_k * 1.4826 * mad, min_abs_px)
+    keep   = np.abs(resid) <= thresh
+    return arr[keep].tolist() if keep.sum() >= 5 else arr.tolist()
+
+
+# =====================================================================
+# 가중평균 + 포물선 보정 fallback
+# =====================================================================
+def _weighted_subpixel_peak(idx, weights):
+    w_sum    = weights.sum()
+    centroid = float(np.dot(idx, weights) / (w_sum + 1e-9))
+    peak_i   = int(np.argmax(weights))
+    if 0 < peak_i < len(weights) - 1:
+        y0, y1, y2 = weights[peak_i-1], weights[peak_i], weights[peak_i+1]
+        denom = y0 - 2*y1 + y2
+        if abs(denom) > 1e-6:
+            delta = max(-1.0, min(1.0, 0.5*(y0-y2)/denom))
+            return 0.5 * centroid + 0.5 * float(idx[peak_i] + delta)
+    return centroid
