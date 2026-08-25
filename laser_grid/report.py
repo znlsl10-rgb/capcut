@@ -331,7 +331,8 @@ def format_record(record):
 # 3. 오버레이 이미지
 # =====================================================================
 def save_segmentation(path, result, base_image=None, shape=None,
-                      point_px=None, dim=0.62, show_defects=True):
+                      point_px=None, dim=0.62, show_defects=True,
+                      uv_transform=None):
     """
     세그멘테이션 결과 이미지 — 색깔별로 무엇을 무엇으로 구분했는지.
 
@@ -347,7 +348,16 @@ def save_segmentation(path, result, base_image=None, shape=None,
 
     show_defects 가 참이면 검출된 요철 덩어리를 원과 깊이 값으로 표시한다.
     "요철 2곳 검출" 이라는 숫자만으로는 어디를 다시 봐야 할지 알 수 없다.
+
+    uv_transform 은 검측 좌표를 배경 이미지 좌표로 옮기는 함수다. 내보내기
+    화소 규약이 코드와 다를 때(180° 돌아 있는 캡처) 배경을 리샘플링해
+    돌리는 대신 그릴 좌표만 되돌린다. 리샘플링은 반전 중심이 화소 격자에
+    딱 떨어지지 않으면 그만큼 어긋나기 때문이다.
     """
+    def _tf(arr):
+        arr = np.asarray(arr, float)
+        return arr if uv_transform is None else np.asarray(uv_transform(arr),
+                                                           float)
     try:
         from PIL import Image, ImageDraw
     except ImportError:
@@ -378,7 +388,7 @@ def save_segmentation(path, result, base_image=None, shape=None,
         if r.get("status") != "measured":
             col = tuple(int(c * 0.45) for c in col)     # 기각 영역은 어둡게
         counts[cls] = counts.get(cls, 0) + len(uv)
-        for u, v in np.asarray(uv, float):
+        for u, v in _tf(uv):
             d.ellipse([u - rad, v - rad, u + rad, v + rad], fill=col)
 
     # ── 요철 위치 ──
@@ -391,8 +401,11 @@ def save_segmentation(path, result, base_image=None, shape=None,
             f = r.get("flatness") or {}
             for k, dd in enumerate(f.get("defects") or []):
                 n_def += 1
-                x0, y0, x1, y1 = dd["bbox_px"]
-                cxp, cyp = dd["center_px"]
+                (x0, y0), (x1, y1) = _tf([dd["bbox_px"][:2],
+                                          dd["bbox_px"][2:]])
+                x0, x1 = min(x0, x1), max(x0, x1)
+                y0, y1 = min(y0, y1), max(y0, y1)
+                cxp, cyp = _tf([dd["center_px"]])[0]
                 # 반지름은 덩어리 크기에 맞추되 너무 작아지지 않게 둔다
                 rad = max(np.hypot(x1 - x0, y1 - y0) / 2.0, W / 90.0)
                 col = DEFECT_COLOR

@@ -126,8 +126,15 @@ def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
     local_sp_h = _local_spacings(h_lids, line_angles, camera_params,
                                  H_img, axis="H")
     # 선별 BAND 딕셔너리: {lid: (band_base, band_max)}
-    band_v = {lid: (max(18, int(local_sp_v[lid]*0.22)),
-                    max(22, int(local_sp_v[lid]*0.40)))
+    # 깊이 구간이 주어지면 그 시차 폭만큼 밴드를 넓힌다. 다만 인접선을
+    # 침범하면 안 되므로 지역 간격의 45% 를 넘지 않게 자른다.
+    # 서브픽셀 창 반폭 [px] — 선폭보다 넉넉하고 인접선을 물지 않을 만큼
+    _subpix_half = int(camera_params.get("subpix_half_px", 4))
+    _px = _parallax_span_px(camera_params) / 2.0
+    band_v = {lid: (max(18, int(min(local_sp_v[lid]*0.22 + _px,
+                                    local_sp_v[lid]*0.45))),
+                    max(22, int(min(local_sp_v[lid]*0.40 + _px,
+                                    local_sp_v[lid]*0.45))))
               for lid in v_lids}
     band_h = {lid: (max(18, int(local_sp_h[lid]*0.22)),
                     max(22, int(local_sp_h[lid]*0.40)))
@@ -172,7 +179,7 @@ def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
         pts = _trace_line(diff, table, u_fallback,
                           b_base, b_max,
                           axis="V", img_size=(H_img, W_img),
-                          scan_range=(v_lo, v_hi))
+                          scan_range=(v_lo, v_hi), subpix_half=_subpix_half)
         out[vl] = pts if len(pts) >= 10 else _geom_pts_v(
             vl, camera_params, H_img, W_img, line_angles)
 
@@ -187,7 +194,7 @@ def detect(rgb_image, lines_pixels_raycast, line_angles, camera_params,
         pts = _trace_line(diff, table, v_fallback,
                           b_base, b_max,
                           axis="H", img_size=(H_img, W_img),
-                          scan_range=(u_lo, u_hi))
+                          scan_range=(u_lo, u_hi), subpix_half=_subpix_half)
         out[hl] = pts if len(pts) >= 10 else _geom_pts_h(
             hl, camera_params, H_img, W_img, line_angles)
 
@@ -310,11 +317,40 @@ def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
     # f=2319, b=150mm, Z=1.2m 에서 290px 에 이른다. 추적 밴드는 20~50px
     # 이므로 이 항을 빼면 밴드가 실제 선 근처에 놓이지도 않는다.
     b = camera_params.get("b_m", 0.150)
-    z_mm = camera_params.get("standoff_z", 1200.0)
-    z_m = float(z_mm) / 1000.0 if z_mm and z_mm > 10 else float(z_mm or 1.2)
-    u_pred = f * np.tan(alpha) - f * b / max(z_m, 1e-3) + cx
+    z_near, z_far = _z_span(camera_params)
+    # 장면에 깊이가 여럿이면 밴드 중심을 그 구간의 한가운데에 둔다.
+    # 앞에 선 부재(동바리·기둥)는 벽보다 가까워 시차가 더 크므로, 벽
+    # 기준 하나로 예측하면 그 선들이 밴드 밖으로 나간다. 실제로 기둥
+    # 3개에 걸린 선이 25~32px 떨어져 통째로 미검출되었다.
+    u_pred = f * np.tan(alpha) - 0.5 * f * b * (1.0 / z_near + 1.0 / z_far) + cx
     # 원근 보정: 거리와 카메라 틸트 없으면 V선은 이미지 전체에서 u가 일정
     return np.full(H_img, u_pred, dtype=float)
+
+
+def _z_span(camera_params):
+    """
+    예측 밴드가 덮어야 할 깊이 구간 [m].
+
+    standoff_z 하나만 주면 그 값 하나로, z_range 를 주면 그 구간으로 잡는다.
+    시차 f·b/Z 는 Z 에 반비례하므로 구간이 조금만 넓어도 화소로는 크게
+    벌어진다 — f=826, b=150mm 에서 1.6~2.7m 구간이 32px 이다.
+    """
+    z_mm = camera_params.get("standoff_z", 1200.0)
+    z = float(z_mm) / 1000.0 if z_mm and z_mm > 10 else float(z_mm or 1.2)
+    zr = camera_params.get("z_range")
+    if zr and len(zr) == 2 and zr[0] and zr[1]:
+        lo, hi = float(min(zr)), float(max(zr))
+        if hi > lo > 1e-3:
+            return lo, hi
+    return z, z
+
+
+def _parallax_span_px(camera_params):
+    """깊이 구간 때문에 생기는 예측 위치의 폭 [px]."""
+    f = camera_params.get("f_px", 2318.8)
+    b = abs(camera_params.get("b_m", 0.150))
+    lo, hi = _z_span(camera_params)
+    return abs(f * b * (1.0 / lo - 1.0 / hi))
 
 
 def _geom_v_for_hline(lid, camera_params, W_img, line_angles):
@@ -504,7 +540,8 @@ def _validate_and_fix(out, lids, centers_hint, raycast,
 # 핵심 추적 함수 (v7 계승 + 개선)
 # =====================================================================
 def _trace_line(intensity_map, table, center_fallback,
-                band_base, band_max, axis, img_size, scan_range=None):
+                band_base, band_max, axis, img_size, scan_range=None,
+                subpix_half=4):
     H_img, W_img = img_size
     STEP        = 1
     TRACK_GAIN  = 0.25
@@ -515,6 +552,10 @@ def _trace_line(intensity_map, table, center_fallback,
     REL_FRAC    = 0.20
     BG_PCTL     = 8
     MIN_WEIGHT  = 2.0
+    # 서브픽셀 창 반폭 [px]. 선폭보다 넉넉해야 꼬리까지 담기고, 인접선을
+    # 물지 않을 만큼 작아야 한다. 이 사양의 격자 간격 44~57px 에 선폭
+    # 2~3px 이라 4px 이면 둘 다 만족한다.
+    SUBPIX_HALF = int(subpix_half)
     MISS_LIMIT  = 5
 
     raw_pts    = []
@@ -567,6 +608,7 @@ def _trace_line(intensity_map, table, center_fallback,
                                       sm2 * 0.88)
                             seg_clean = np.where(
                                 seg2 >= sb2+(sm2-sb2)*REL_FRAC, seg2, 0.0)
+                            seg, seg_bg = seg2, sb2
                             lo, hi = lo2, hi2
                 else:
                     lo2 = max(0,     int(round(pred - band)))
@@ -579,14 +621,19 @@ def _trace_line(intensity_map, table, center_fallback,
                                       sm2 * 0.88)
                             seg_clean = np.where(
                                 seg2 >= sb2+(sm2-sb2)*REL_FRAC, seg2, 0.0)
+                            seg, seg_bg = seg2, sb2
                             lo, hi = lo2, hi2
 
         if seg_clean.sum() < MIN_WEIGHT:
             miss_count += 1; continue
 
         idx = np.arange(lo, hi, dtype=float)
-        # [방안1] Steger 서브픽셀 (미분 기반, 비대칭 프로파일 강건)
-        sub = _steger_subpixel(idx, seg_clean, pred, band)
+        # 배경 뺀 대칭 창 무게중심이 주 추정. 창을 못 잡거나 신호가 약하면
+        # Steger 로 넘긴다.
+        sub = _ridge_centroid_subpixel(seg, lo, seg_bg, pred, band,
+                                       half=SUBPIX_HALF)
+        if sub is None:
+            sub = _steger_subpixel(idx, seg_clean, pred, band)
 
         if axis == "V":
             raw_pts.append([sub, float(i)])
@@ -697,6 +744,47 @@ def _grid_joint_refine(out, v_lids, h_lids, line_angles, camera_params,
     n1 = _fit_axis(v_lids, 0, n_v, fov_h, cx)   # V선: u좌표 정렬
     n2 = _fit_axis(h_lids, 1, n_h, fov_v, cy)   # H선: v좌표 정렬
     return n1 + n2
+
+
+def _ridge_centroid_subpixel(seg_raw, lo, bg, pred, band, half=4):
+    """
+    배경을 뺀 **대칭 창** 안의 세기 가중 중심 — 이 코드의 주 서브픽셀 추정.
+
+    왜 바꿨나
+    --------
+    이전에는 Steger(미분 기반)를 썼다. 비대칭 프로파일에 강하다는 것이
+    이유였지만, 이 구현은 두 가지를 함께 하고 있었다.
+      · [1,4,6,4,1] 평활 후 정점 3점만으로 포물선을 세운다. 선폭이
+        2~3px 뿐이면 평활이 프로파일을 뭉개 3점 포물선이 편향된다.
+      · 입력이 이미 하드 문턱으로 잘린 seg_clean 이라, 꼬리가 한쪽만
+        잘리면 그만큼 중심이 밀린다.
+    실측하면 렌더 이미지에서 Steger 경로가 σ 0.357px 인데, 배경을 빼고
+    대칭 창에서 그냥 무게중심을 잡으면 σ 0.024px 다. 15배 차이다.
+
+    중심법이 편향되는 두 원인은 창의 비대칭과 배경이다. 둘 다 여기서
+    없앤다 — 정점 기준 대칭 창을 쓰고(양쪽이 잘리면 짧은 쪽에 맞춰
+    함께 줄인다), 배경을 뺀 뒤 음수는 0 으로 자른다. 잘린 값이 아니라
+    원신호를 쓰므로 꼬리도 살아 있다.
+
+    창이 확보되지 않거나 신호가 약하면 Steger 로 넘긴다.
+    """
+    n = len(seg_raw)
+    if n < 3:
+        return None
+    pk = int(np.argmax(seg_raw))
+    h = int(min(half, pk, n - 1 - pk))          # 양쪽 대칭이 되게 줄인다
+    if h < 1:
+        return None
+    win = seg_raw[pk - h: pk + h + 1].astype(np.float64) - float(bg)
+    np.clip(win, 0.0, None, out=win)
+    tot = win.sum()
+    if tot <= 1e-6:
+        return None
+    x = np.arange(lo + pk - h, lo + pk + h + 1, dtype=np.float64)
+    mu = float((x * win).sum() / tot)
+    if abs(mu - pred) > band:
+        return None
+    return mu
 
 
 def _steger_subpixel(idx, weights, pred, band):

@@ -196,7 +196,7 @@ def _sheet_design(wb, openpyxl):
     return ws
 
 
-def _sheet_detection(wb, openpyxl, det):
+def _sheet_detection(wb, openpyxl, det, e2e=None):
     """
     선검출 정확도 — 화소가 맞아야 3D 가 맞는다.
 
@@ -245,6 +245,12 @@ def _sheet_detection(wb, openpyxl, det):
          f"{det['depth_err_mm']:.1f} mm", "계통 + 무작위"),
         ("95 백분위", f"{det['err_p95_px']:.3f} px", "", ""),
     ]
+    if det.get("quantization_px"):
+        rows.append(("렌더 양자화 한계", f"{det['quantization_px']:.3f} px",
+                     f"{det['quantization_mm']:.1f} mm",
+                     "레이저선이 안티에일리어싱 없이 이진(0/255)으로 그려져 "
+                     "있어 위치가 0.5px 격자에 갇힌다. 어떤 서브픽셀 알고리즘도 "
+                     "이 아래로는 못 내려간다 — 입력을 고쳐야 하는 몫이다"))
     for r in rows:
         ws.append(list(r))
     _style(ws, openpyxl, widths=[20, 16, 13, 62])
@@ -255,6 +261,28 @@ def _sheet_detection(wb, openpyxl, det):
     bad = det["err_noise_px"] > sig * 1.5
     c.fill = PatternFill("solid", fgColor="FEE2E2" if bad else "DCFCE7")
     c.font = Font(bold=True, color="991B1B" if bad else "166534", size=10)
+
+    if e2e and e2e.get("rows"):
+        ws.append([])
+        ws.append(["검출 화소로 검측까지 돌린 결과", "", "", ""])
+        h2 = ws.max_row + 1
+        ws.append(["부재", "정답 화소 결과", "검출 화소 결과", "차이"])
+        for r in e2e["rows"]:
+            if r.get("dtheta_deg") is None:
+                ws.append([r["class"], f"{r['theta_gt']}°",
+                           "측정 실패", "—"])
+                continue
+            ws.append([r["class"], f"각도 {r['theta_gt']}°",
+                       f"각도 {r['theta_det']}°", f"{r['dtheta_deg']}°"])
+            if r.get("dgap_mm") is not None:
+                ws.append(["", f"자처짐 {r['gap_gt_mm']} mm",
+                           f"자처짐 {r['gap_det_mm']} mm", f"{r['dgap_mm']} mm"])
+        _style(ws, openpyxl, widths=[20, 16, 13, 62], header_row=h2)
+        ws.append([])
+        ws.append(["읽는 법",
+                   "각도는 면적합이 수만 점을 평균하므로 화소 오차가 거의 "
+                   "옮겨 붙지 않는다. 평활도는 점별 오차가 그대로 표면 "
+                   "요철로 보이므로 화소 정밀도가 곧 결과다.", "", ""])
 
     ws.append([])
     ws.append(["선별 상세", "", "", ""])
@@ -473,7 +501,8 @@ def _sheet_caveats(wb, openpyxl, record, extra=None):
 # 진입점
 # =====================================================================
 def save_excel(path, result, meta=None, label_pixels=None,
-               extra_caveats=None, seg_image_path=None, detection=None):
+               extra_caveats=None, seg_image_path=None, detection=None,
+               end_to_end=None):
     """
     검측 결과를 엑셀 조서로 저장한다.
 
@@ -490,7 +519,7 @@ def save_excel(path, result, meta=None, label_pixels=None,
     wb = openpyxl.Workbook()
     _sheet_summary(wb, openpyxl, record, dict(meta or {}), result)
     _sheet_design(wb, openpyxl)
-    _sheet_detection(wb, openpyxl, detection)
+    _sheet_detection(wb, openpyxl, detection, end_to_end)
     _sheet_segmentation(wb, openpyxl, result, record, label_pixels,
                         seg_image_path)
     _sheet_results(wb, openpyxl, record)
