@@ -142,15 +142,16 @@ def _backend_gt(rgb_off, label_map=None, id_to_semantic=None, **kw):
 def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
                   plane_threshold_m=0.01, min_plane_points=60,
                   max_planes=4, cluster_eps_m=0.08, min_linear_points=15,
-                  **kw):
+                  merge_gap_m=0.25, **kw):
     """
     3D 점군만으로 영역을 나눈다 — 모델·네트워크 불필요한 폴백.
 
     순서
     ----
     1. 순차 RANSAC 으로 큰 평면부터 뽑아내고 inlier 를 제거한다.
-    2. 각 평면 inlier 를 DBSCAN 으로 공간 분리한다
-       (같은 평면 위의 떨어진 두 벽을 한 영역으로 묶지 않기 위함).
+    2. 각 평면 inlier 를 DBSCAN 으로 공간 분리하고(같은 평면 위의 떨어진
+       두 벽을 한 영역으로 묶지 않기 위함), 그중 가림 그림자로 갈라진
+       조각만 다시 합친다(_merge_occlusion_split).
     3. 남은 점을 DBSCAN 으로 묶고, 선형성이 높은 덩어리를 선형 부재로 본다.
     4. 각 덩어리의 기하 증거로 wall / floor / shoring 라벨을 붙인다.
 
@@ -222,8 +223,11 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
 
         inl_global = remaining[inlier_mask]
         consumed = []
-        for grp in _spatial_groups(pts[inl_global], cluster_eps_m,
-                                   min_plane_points):
+        groups = _merge_occlusion_split(
+            pts[inl_global],
+            _spatial_groups(pts[inl_global], cluster_eps_m, min_plane_points),
+            merge_gap_m)
+        for grp in groups:
             gidx = inl_global[grp]
             ev = _EQ5.geometric_evidence(pts[gidx], g_hat)
             cls = {"plane_vertical": "wall",
@@ -271,6 +275,60 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
                      "unassigned": int((labels == bg_id).sum()),
                      "caveat": "기하 전용 백엔드는 동바리/기둥/철근과 "
                                "벽/거푸집/조적을 구분하지 못함"}}
+
+
+def _merge_occlusion_split(points, groups, merge_gap_m):
+    """
+    같은 평면에서 갈라진 조각 중 **가림 그림자** 때문에 갈라진 것만 합친다.
+
+    왜 필요한가
+    ----------
+    DBSCAN eps 는 점 밀도에 맞춰 자동으로 좁아진다. 격자를 조밀하게 만들면
+    eps 도 함께 좁아지므로, 앞에 선 동바리가 벽에 드리운 폭 ~5cm 의 빈 띠가
+    갑자기 "서로 다른 두 벽" 으로 보이게 된다. 실제로 V선을 20 → 40 개로
+    늘리자 벽 6,844점이 4,188 + 2,667 로 쪼개졌고, 그 결과 직선자 프로파일
+    길이가 1.15m 에서 0.69m 로 줄어 평활도가 3.9mm 에서 2.6mm 로 낮게
+    나왔다. 각도는 두 조각 모두 같은 법선을 주므로 멀쩡했고, 그래서
+    평활도만 조용히 틀렸다.
+
+    무엇으로 구분하나
+    ----------------
+    가림 그림자는 좁고(부재 지름 정도), 개구부·벽 분리는 넓다.
+    두 조각의 최근접 거리가 merge_gap_m 미만이면 그림자로 보고 합친다.
+    Ø48.6mm 동바리의 그림자는 10cm 안쪽, 문 개구부는 80cm 이상이므로
+    25cm 를 문턱으로 두면 둘이 섞이지 않는다.
+
+    합치는 것이 늘 옳지는 않다. 같은 평면 위에서 25cm 안쪽으로 떨어진 두
+    부재(좁은 벽기둥 사이 등)는 하나로 묶인다. 다만 그 경우에도 두 조각은
+    같은 평면이므로 각도 판정은 바뀌지 않고, 평활도는 실제 면을 더 길게
+    보게 되어 KCS 직선자 취지에 오히려 맞는다.
+    """
+    if len(groups) < 2 or merge_gap_m <= 0:
+        return groups
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return groups
+
+    parent = list(range(len(groups)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+
+    trees = [cKDTree(points[g]) for g in groups]
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            d, _ = trees[j].query(points[groups[i]], k=1)
+            if float(np.min(d)) < merge_gap_m:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+    merged = {}
+    for i, g in enumerate(groups):
+        merged.setdefault(find(i), []).append(g)
+    return [np.concatenate(v) if len(v) > 1 else v[0] for v in merged.values()]
 
 
 def _spatial_groups(points, eps_m, min_points, min_samples=4):

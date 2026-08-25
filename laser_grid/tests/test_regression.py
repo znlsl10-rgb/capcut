@@ -51,43 +51,72 @@ def test_hardware_spec():
     적어 두었지만 PDF 는 초점거리를 명시한 적이 없다. 12mm 로는 DOE
     격자(120cm 936mm)가 센서에 담기지 않고 고정 초점 심도도 작업거리를
     못 덮는데, 검사가 없어 조용히 넘어갔다.
+
+    이제 사양 프로파일이 둘이므로 검사도 둘로 나뉜다.
+      · pdf      사양표 원문과 한 글자도 어긋나지 않아야 한다
+      · improved 바뀐 항목은 근거가 있어야 하고, 물리 조건(격자 수용·
+                 심도·목표 정밀도)은 pdf 와 똑같이 만족해야 한다
     """
     print("\n[0] 하드웨어 사양 정합성 — PDF 2.2")
     C = CALIB
-    check(f"해상도 {C.IMAGE_W}×{C.IMAGE_H} = 사양",
+    keep = C.ACTIVE_PROFILE
+
+    # ── PDF 프로파일은 사양표와 일치해야 한다 ──
+    C.use_profile("pdf")
+    check(f"[pdf] 해상도 {C.IMAGE_W}×{C.IMAGE_H} = 사양",
           (C.IMAGE_W, C.IMAGE_H) == (2448, 2048))
-    check(f"화소 {C.PIXEL_PITCH_UM}µm ≥ 사양 3.45µm", C.PIXEL_PITCH_UM >= 3.45)
-    check(f"기선 {C.BASELINE_M*1000:.0f}mm = 사양 150mm",
+    check(f"[pdf] 화소 {C.PIXEL_PITCH_UM}µm ≥ 사양 3.45µm",
+          C.PIXEL_PITCH_UM >= 3.45)
+    check(f"[pdf] 기선 {C.BASELINE_M*1000:.0f}mm = 사양 150mm",
           abs(C.BASELINE_M - 0.150) < 1e-9)
-    check(f"격자 수직{C.N_VERTICAL}+수평{C.N_HORIZONTAL} = "
+    check(f"[pdf] 격자 수직{C.N_VERTICAL}+수평{C.N_HORIZONTAL} = "
           f"{C.N_VERTICAL*C.N_HORIZONTAL}교점 = 사양 400교점",
           C.N_VERTICAL * C.N_HORIZONTAL == 400)
-    proj = C.projection_mm_at(1.2)
-    check(f"120cm 투사폭 {proj:.0f}mm = 사양 936mm", abs(proj - 936.0) < 1.0)
-    check(f"센서 대각 {C.SENSOR_DIAG_MM:.2f}mm ≥ 2/3\u2033(11.0mm)",
+    check(f"[pdf] 센서 대각 {C.SENSOR_DIAG_MM:.2f}mm ≥ 2/3\u2033(11.0mm)",
           C.SENSOR_DIAG_MM >= 10.9)
 
-    # 사양이 서로 모순되지 않는지 — 여기서 걸러야 실장비에서 안 걸린다
-    r = C.check_consistency(verbose=False)
-    check(f"격자가 {C.WORK_Z_MIN_M}~{C.WORK_Z_MAX_M}m 내내 센서 안 "
-          f"(u {r['u_range_near'][0]:.0f}..{r['u_range_far'][1]:.0f}, "
-          f"v {r['v_range'][0]:.0f}..{r['v_range'][1]:.0f})", r["fits"])
-    near, far = C.depth_of_field()
-    check(f"고정초점 {C.FOCUS_DISTANCE_M}m 심도 {near:.2f}~{far:.2f}m 가 "
-          f"작업거리를 덮음",
-          near <= C.WORK_Z_MIN_M and far >= C.WORK_Z_MAX_M)
-    sz = C.sigma_z_mm(C.WORK_Z_MAX_M)
-    check(f"최원거리 깊이잡음 {sz:.2f}mm ≤ 목표 ±{C.TARGET_SIGMA_MM}mm",
-          sz <= C.TARGET_SIGMA_MM)
+    # ── 두 프로파일 모두 만족해야 하는 물리 조건 ──
+    proj = C.projection_mm_at(1.2)
+    check(f"120cm 투사폭 {proj:.0f}mm = 사양 936mm (프로파일 무관)",
+          abs(proj - 936.0) < 1.0)
+    for name in ("pdf", "improved"):
+        C.use_profile(name)
+        r = C.check_consistency(verbose=False)
+        check(f"[{name}] 격자가 {C.WORK_Z_MIN_M}~{C.WORK_Z_MAX_M}m 내내 센서 안 "
+              f"(u {r['u_range_near'][0]:.0f}..{r['u_range_far'][1]:.0f}, "
+              f"v {r['v_range'][0]:.0f}..{r['v_range'][1]:.0f})", r["fits"])
+        near, far = C.depth_of_field()
+        check(f"[{name}] 고정초점 {C.FOCUS_DISTANCE_M}m 심도 "
+              f"{near:.3f}~{far:.3f}m 가 작업거리를 덮음",
+              near <= C.WORK_Z_MIN_M and far >= C.WORK_Z_MAX_M)
+        sz = C.sigma_z_mm(C.WORK_Z_MAX_M)
+        check(f"[{name}] 최원거리 깊이잡음 {sz:.2f}mm ≤ 목표 ±{C.TARGET_SIGMA_MM}mm",
+              sz <= C.TARGET_SIGMA_MM)
+        icp = C.isaac_camera_params()
+        f_usd = (icp["focal_length_mm"] * icp["resolution"][0]
+                 / icp["horizontal_aperture_mm"])
+        check(f"[{name}] Isaac 카메라 설정 → f_px {f_usd:.1f} = {C.F_PX:.1f}",
+              abs(f_usd - C.F_PX) < 0.5)
+        check(f"[{name}] 수렴각 {C.LASER_TILT_DEG}° 가 탐색 최적값과 일치",
+              abs(C.find_best_tilt()["tilt_deg"] - C.LASER_TILT_DEG) < 0.02)
 
-    # Isaac 카메라에 넣을 값이 f_px 를 그대로 재현하는지
-    icp = C.isaac_camera_params()
-    f_from_usd = (icp["focal_length_mm"] * icp["resolution"][0]
-                  / icp["horizontal_aperture_mm"])
-    check(f"Isaac 카메라 설정 → f_px {f_from_usd:.1f} = {C.F_PX:.1f}",
-          abs(f_from_usd - C.F_PX) < 0.5)
+    # ── 개선안이 실제로 개선인지 ──
+    rows = {r["name"]: r for r in C.compare_profiles()}
+    pdf, imp = rows["pdf"], rows["improved"]
+    gain = pdf["sigma_z_mm"] / imp["sigma_z_mm"]
+    check(f"개선안 깊이잡음 {pdf['sigma_z_mm']}mm → {imp['sigma_z_mm']}mm "
+          f"({gain:.2f}배 개선)", gain >= 2.5)
+    dens = pdf["pitch_mm"] / imp["pitch_mm"]
+    check(f"개선안 격자 피치 {pdf['pitch_mm']}mm → {imp['pitch_mm']}mm "
+          f"({dens:.2f}배 조밀)", dens >= 1.9)
+    check(f"개선안 격자 피치 {imp['pitch_mm']}mm < 동바리 Ø48.6mm "
+          f"— 부재당 V선 2개 이상", imp["pitch_mm"] < 48.6 / 2.0)
+    check("개선안이 레이저 출력을 올리지 않음 (눈 안전등급 재평가 불필요)",
+          C.LASER_POWER_MW == (30, 49))
 
-    # 탈락시킨 초점거리가 실제로 탈락하는지 (근거가 살아 있는지)
+    C.use_profile(keep)
+
+    # ── 초점거리 근거가 살아 있는지 (활성 프로파일 기준) ──
     bad = []
     for fmm in (10.0, 12.0, 16.0):
         cp = {**C.CAMERA_PARAMS, "f_px": C.focal_px(fmm)}
@@ -98,7 +127,7 @@ def test_hardware_spec():
     check(f"10/12/16mm 는 격자 수용·심도에서 탈락 (통과 {len(bad)}건)"
           + (f" — {bad}" if bad else ""), not bad)
 
-    # DOE 사인등간격 모델 — 바깥 포락선은 등각도와 같아야 한다
+    # ── DOE 사인등간격 모델 ──
     s = C._fan_angles(C.N_VERTICAL, C.FOV_DEG, "equal_sine")
     a = C._fan_angles(C.N_VERTICAL, C.FOV_DEG, "equal_angle")
     check(f"DOE 사인등간격 — 포락선 ±{np.degrees(s[-1]):.2f}° 는 등각도와 동일",
@@ -107,8 +136,7 @@ def test_hardware_spec():
     # 판단이 선다. α 를 잘못 알면 u 가 맞아도 Z 가 틀어진다.
     #     Z = f·b / (f·tanα − (u−c_x))  →  dZ/dα ≈ Z²/b · sec²α
     d = float(np.max(np.abs(s - a)))
-    z = 1.2
-    dz_mm = d * z * z / C.BASELINE_M * 1000.0
+    dz_mm = d * 1.2 * 1.2 / C.BASELINE_M * 1000.0
     check(f"DOE 모델 오선택 시 1.2m 깊이오차 {dz_mm:.0f}mm — 목표 "
           f"±{C.TARGET_SIGMA_MM}mm 를 크게 넘으므로 실측 α_i 가 필수",
           dz_mm > C.TARGET_SIGMA_MM)
@@ -219,6 +247,7 @@ def test_axis_fit():
 def test_region_pipeline():
     """합성 씬 전 구간 — 두 세그멘테이션 백엔드"""
     print("\n[6] 영역별 검측 파이프라인 — 합성 씬 (벽+바닥+동바리)")
+    truth_gap = SYN.GT_STRAIGHTEDGE_MM
     scene = SYN.build_scene()
     gt = scene["gt"]
     want = {"wall": "wall_verticality_deg",
@@ -239,12 +268,23 @@ def test_region_pipeline():
         check(f"[{backend}] 카메라 자세 유도 ĝ 오차 {gerr:.2e}", gerr < 1e-6)
 
         best = {}
+        n_wall_regions = 0
         for r in res["regions"]:
             if r["status"] != "measured":
                 continue
             c = r["class"]
+            if c == "wall":
+                n_wall_regions += 1
             if c not in best or r["n_points"] > best[c]["n_points"]:
                 best[c] = r
+
+        # 벽은 하나여야 한다. 앞에 선 동바리가 드리운 폭 ~5cm 의 가림
+        # 그림자가 벽을 두 조각으로 나누면 각도는 멀쩡한데 직선자
+        # 프로파일만 절반으로 줄어 평활도가 조용히 낮게 나온다
+        # (실측 3.91 → 2.58mm). C_영역분할._merge_occlusion_split 참조.
+        check(f"[{backend}] 벽이 가림 그림자로 쪼개지지 않음 "
+              f"(측정된 벽 영역 {n_wall_regions}개)", n_wall_regions == 1)
+
         for cls, key in want.items():
             r = best.get(cls)
             if not check(f"[{backend}] {cls} 영역 검출됨", r is not None):
@@ -265,8 +305,17 @@ def test_region_pipeline():
             # 하고, 그러면 벽을 30° 이상 사각으로 보게 되어 면내 점밀도가
             # 낮아진다. σ=5cm 요철은 그 분해능 아래로 내려간다.
             # 따라서 참값 포괄이 아니라 **하한값 성질**을 검증한다.
-            check(f"[{backend}] 벽 자 처짐 {gap:.2f}mm 는 정답 {bump}mm 의 "
-                  f"하한 (과대평가 없음)", gap <= bump * 1.15)
+            # 참값은 융기 높이(6mm)가 아니라 직선자 처짐(3.99mm)이다.
+            # synth_scene.GT_STRAIGHTEDGE_MM 주석에 유도가 있다.
+            #
+            # 허용치를 프로파일마다 다르게 두는 이유가 곧 개선안의 근거다.
+            # PDF 원안은 1.2m 격자 피치가 49.3mm 라 프로파일이 성기고,
+            # 상단 볼록껍질이 성긴 표본 위에서 그려지면 처짐이 과대평가된다
+            # (실측 +0.77mm). 개선안은 피치 24.0mm 에서 −0.08mm 다.
+            tol = {"pdf": 1.0}.get(CALIB.ACTIVE_PROFILE, 0.3)
+            check(f"[{backend}] 벽 자 처짐 {gap:.2f}mm — 참값 {truth_gap}mm 대비 "
+                  f"{gap-truth_gap:+.2f}mm (허용 ±{tol}mm, "
+                  f"프로파일 {CALIB.ACTIVE_PROFILE})", abs(gap - truth_gap) <= tol)
             # 요철 깊이는 정점 근방 원시잔차라 분해능 영향이 적다
             check(f"[{backend}] 벽 요철 깊이 {depth:.2f}mm 가 정답 {bump}mm 근방",
                   0.6 * bump <= depth <= 1.4 * bump)

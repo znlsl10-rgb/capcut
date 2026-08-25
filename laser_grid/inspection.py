@@ -387,6 +387,31 @@ def _boost_lighting(stage):
         LOG(f"  [경고] 조명: {e}")
 
 
+def apply_sensor_response(rgb):
+    """
+    렌더된 RGB 를 프로파일의 센서 응답으로 바꾼다.
+
+    개선 프로파일은 모노 센서 + 520nm 대역통과 필터다. Isaac 은 RGB 로
+    렌더하므로, 그 조합이 실제로 무엇을 하는지 화소 단계에서 흉내 낸다.
+
+      · 대역통과 필터  520nm 만 통과 → 렌더 이미지의 G 채널만 남는다.
+        R·B 로 들어오는 배경광이 사라져 직사광 아래 SNR 이 올라간다.
+      · 모노 센서      베이어 배열이 없으므로 G 를 전 화소에서 얻는다.
+        컬러 센서였다면 G 화소가 절반뿐이고 디모자이크가 선 단면을
+        뭉개, 서브픽셀 중심이 흔들린다.
+
+    반환은 (H,W,3) 회색조로 맞춘다. 뒤쪽 선검출·세그멘테이션이 3채널을
+    전제로 하기 때문이다. 세그멘테이션이 색을 잃는 것이 이 사양 변경의
+    대가이며, 흑백 문맥 영상으로 돌려야 한다.
+
+    PDF 원안 프로파일에서는 아무것도 하지 않고 그대로 돌려준다.
+    """
+    if rgb is None or CALIB.OPTICAL_FILTER_NM is None:
+        return rgb
+    g = np.asarray(rgb)[:, :, 1]
+    return np.repeat(g[:, :, None], 3, axis=2)
+
+
 def _setup_camera(stage):
     """
     검측 카메라 생성 — 실물 사양을 그대로 넣는다 (PDF 2.2).
@@ -535,6 +560,15 @@ def capture_station(stage, world, camera, line_angles,
     → overlay.png 저장 (raycast 파랑 + 검출 초록)
     """
     cp = dict(CAMERA_PARAMS)
+    # 선검출이 격자 예측에 쓰는 값. 없으면 A_선검출이 20선·42.61° 를
+    # 가정하는데, 개선 프로파일은 V선이 40개라 예측이 통째로 어긋난다.
+    cp.update({"n_v": GRID_PARAMS["n_vertical"],
+               "n_h": GRID_PARAMS["n_horizontal"],
+               "fov_h_deg": GRID_PARAMS["fov_deg"],
+               "fov_v_deg": GRID_PARAMS["fov_deg"],
+               "image_w": CAMERA_PARAMS["resolution"][0],
+               "image_h": CAMERA_PARAMS["resolution"][1],
+               "standoff_z": None})
     # 실험에서 baseline 오버라이드
     if baseline_m is not None:
         cp["b_m"] = float(baseline_m)
@@ -542,6 +576,8 @@ def capture_station(stage, world, camera, line_angles,
 
     # 실험에서 standoff 오버라이드
     _standoff = standoff_m if standoff_m is not None else cfg.get("standoff_m", 1.0)
+
+    cp["standoff_z"] = float(_standoff)   # 시차항 −f·b/Z 에 쓰인다
 
     # ── 위치 계산 ──
     center = _world_center_of(stage, cfg["target"])
@@ -651,7 +687,9 @@ def capture_station(stage, world, camera, line_angles,
 
     # ── rgb_raw 캡처 ──
     _wait(world,20)
-    try: rgba=camera.get_rgba(); rgb_raw=rgba[:,:,:3] if rgba is not None else None
+    try:
+        rgba=camera.get_rgba()
+        rgb_raw=apply_sensor_response(rgba[:,:,:3]) if rgba is not None else None
     except: rgb_raw=None
 
     # ── [방안4] 레이저 OFF 프레임 (차영상용) ──
@@ -682,7 +720,7 @@ def capture_station(stage, world, camera, line_angles,
         ng=_make_emissive_grid(stage,lines_world,normal)
         LOG(f"  발광 레이저 {ng}선"); _wait(world,60)
         rgba2=camera.get_rgba()
-        rgb_laser=rgba2[:,:,:3] if rgba2 is not None else None
+        rgb_laser=apply_sensor_response(rgba2[:,:,:3]) if rgba2 is not None else None
         if stage.GetPrimAtPath("/World/LaserGrid").IsValid():
             stage.RemovePrim("/World/LaserGrid")
 

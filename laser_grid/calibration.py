@@ -35,6 +35,7 @@ synth_scene.py 가 같은 값을 따로 들고 있었고 A_선검출·eq5 는 �
   아래 LENS_FOCAL_MM 주석이 그것을 어떻게 정했는지 적는다.
 ========================================================================
 """
+import os as _os
 import numpy as np
 
 # =====================================================================
@@ -111,11 +112,85 @@ LASER_TILT_DEG = 6.18       # design 수렴각 (카메라 쪽으로)
 # 선검출 정밀도 (불확실도 산정용)
 SIGMA_U_PX = 0.2            # assumed 서브픽셀 반복성. 실장비 측정 필요
 
+SENSOR_COLOR = "color"      # spec  PDF 3.1 "RGB 영상 … 컬러"
+OPTICAL_FILTER_NM = None    # PDF 에 없음
+LASER_POWER_MW_SPEC = LASER_POWER_MW
+
+
+# =====================================================================
+# 사양 프로파일 — PDF 원안과 정확도 개선안
+# =====================================================================
+# PDF 사양은 목표 정확도를 만족한다. 다만 여유가 항목마다 크게 다르다.
+# 합성 씬으로 측정한 현행 오차는 이렇다.
+#
+#   면 수직·수평도   0.013°   목표 0.5° 의 1/38  — 여유가 크다
+#   동바리 수직도    0.149°   목표 0.5° 의 1/3   — 여유가 작다
+#   평활도 불확실도  ±0.61mm  목표 ±2mm 의 1/3   — 여유가 작다
+#   깊이 잡음 σ_Z    0.83mm   (1.2m)
+#
+# 뒤의 두 항목이 병목이고, 원인이 같다. 1.2m 에서 격자 피치가 49.3mm 라
+# Ø48.6mm 동바리에 V선이 한두 개밖에 걸리지 않고, 벽 프로파일도 49mm
+# 간격으로만 찍힌다. 즉 정확도를 올리는 첫 번째 지렛대는 광학 정밀도가
+# 아니라 **공간 표본 밀도**다.
+#
+# 개선안이 바꾸는 것과 그 이유:
+#
+#  (a) V선 20 → 40, H선 20 유지 (400 → 800 교점)
+#      깊이를 주는 것은 V선뿐이다. 기선이 X축이라 H선은 시차가 선과
+#      나란해 삼각측량이 풀리지 않는다(실장비도 V×H 교점에서만 α 를
+#      회복한다). 따라서 H선을 늘려도 측정점은 하나도 늘지 않는다.
+#      V선만 두 배로 늘리면 선 수는 40 → 60 (1.5배) 인데 측정 표본은
+#      2배가 된다. 40+40 (선 80개) 보다 광량 부담이 작다.
+#
+#  (b) 컬러 → 모노 + 520nm 대역통과 필터
+#      컬러 센서는 베이어 배열이라 녹색선이 적·청 화소 위에서 신호를
+#      잃고, 디모자이크가 선 단면을 뭉갠다. 모노는 이 둘이 없다.
+#      대역통과 필터는 배경광을 30배 줄여 직사광 아래 SNR 을 살린다.
+#      두 가지로 σ_u 를 0.2 → 0.1px 로 잡았다. PDF 의 차영상 모드와
+#      상충하지 않고 오히려 그 부담을 덜어준다.
+#      대가: RGB 문맥 영상을 잃는다. 세그멘테이션은 흑백으로 해야 한다.
+#
+#  (c) 화소 3.45 → 2.74µm, 2448 → 3072 (센서 크기·렌즈·화각 그대로)
+#      σ_Z 는 초점거리가 아니라 화소 수로 정해진다.
+#          σ_Z = σ_u · Z · W_시야 / (N_화소 · b)
+#      같은 2/3″ 에 작은 화소를 쓰면 렌즈도 심도도 그대로 두고 화소
+#      수만 1.26배 올릴 수 있다. Pregius S(2.74µm) 세대가 이에 해당한다.
+#
+#  (d) 기선 150 → 180mm
+#      σ_Z ∝ 1/b. 외형 210mm 폭 안에서 렌즈 경통 여유를 남긴 최대값이다.
+#
+# 바꾸지 않은 것과 그 이유:
+#   · DOE 발산각 42.61°  — 좁히면 σ_Z 는 좋아지지만 담는 면적이 준다.
+#     KCS 3m 직선자 기준은 이미 한 장으로 커버가 안 되므로(1.5m 에서
+#     1.17m) 화각을 더 줄이는 방향은 손해다.
+#   · 렌즈 8mm F2.0 초점 1.2m 고정 — 심도가 작업거리를 덮는 유일한 값.
+#   · 레이저 출력 30~49mW — 선이 40 → 60 개로 늘어 선당 광량은 0.67배가
+#     되지만, 모노(약 2배)와 대역통과 필터(배경 1/30)가 그 이상을
+#     보상한다. 출력을 올리지 않으므로 눈 안전등급 재평가가 필요 없다.
+#   · 측정거리 1.0~1.5m — PDF 권장 유지.
+SPEC_PROFILES = {
+    "pdf": {
+        "label": "PDF 원안",
+        "pixel_pitch_um": 3.45, "image_w": 2448, "image_h": 2048,
+        "sensor_color": "color", "optical_filter_nm": None,
+        "baseline_m": 0.150, "n_vertical": 20, "n_horizontal": 20,
+        "lens_focal_mm": 8.0, "sigma_u_px": 0.2, "laser_tilt_deg": 6.18,
+    },
+    "improved": {
+        "label": "정확도 개선안",
+        "pixel_pitch_um": 2.74, "image_w": 3072, "image_h": 2560,
+        "sensor_color": "mono", "optical_filter_nm": 520,
+        "baseline_m": 0.180, "n_vertical": 40, "n_horizontal": 20,
+        "lens_focal_mm": 8.0, "sigma_u_px": 0.1, "laser_tilt_deg": 7.40,
+    },
+}
+ACTIVE_PROFILE = _os.environ.get("LASER_GRID_PROFILE", "improved")
+
 
 # =====================================================================
 # 사양에서 유도되는 값
 # =====================================================================
-def focal_px(focal_mm=LENS_FOCAL_MM, pitch_um=PIXEL_PITCH_UM):
+def focal_px(focal_mm=None, pitch_um=None):
     """
     렌즈 초점거리와 화소 피치에서 픽셀 단위 초점거리를 구한다.
 
@@ -123,7 +198,12 @@ def focal_px(focal_mm=LENS_FOCAL_MM, pitch_um=PIXEL_PITCH_UM):
 
     삼각측량식의 f 는 픽셀 단위여야 한다. 같은 렌즈라도 센서 화소가
     작을수록 f_px 는 커지고, 그만큼 깊이 분해능이 좋아진다.
+
+    인자를 비우면 현재 활성 프로파일 값을 쓴다. 기본값으로 못 박으면
+    use_profile() 로 프로파일을 바꿔도 옛 값이 그대로 남는다.
     """
+    focal_mm = LENS_FOCAL_MM if focal_mm is None else focal_mm
+    pitch_um = PIXEL_PITCH_UM if pitch_um is None else pitch_um
     return focal_mm / (pitch_um / 1000.0)
 
 
@@ -133,30 +213,59 @@ def projection_mm_at(z_m, fov_deg=None):
     return 2.0 * z_m * 1000.0 * np.tan(fov / 2.0)
 
 
-F_PX = focal_px()                      # 2318.8 px  (8mm / 3.45µm)
+CAMERA_PARAMS = {}
+GRID_PARAMS = {}
 
-# 센서 물리 크기 — Isaac Sim 카메라의 aperture 에 그대로 들어간다.
-SENSOR_W_MM = IMAGE_W * PIXEL_PITCH_UM / 1000.0     # 8.4456 mm
-SENSOR_H_MM = IMAGE_H * PIXEL_PITCH_UM / 1000.0     # 7.0656 mm
-SENSOR_DIAG_MM = float(np.hypot(SENSOR_W_MM, SENSOR_H_MM))   # 11.01mm ≈ 2/3″
-CX_PX = IMAGE_W / 2.0                  # assumed 센서 정중앙. 캘리브레이션 필요
-CY_PX = IMAGE_H / 2.0                  # assumed 동일
 
-CAMERA_PARAMS = {
-    "f_px":  round(F_PX, 1),
-    "b_m":   BASELINE_M,
-    "cx_px": CX_PX,
-    "cy_px": CY_PX,
-    "resolution": [IMAGE_W, IMAGE_H],
-}
+def use_profile(name=None):
+    """
+    사양 프로파일을 적용해 파생값을 다시 계산한다.
 
-GRID_PARAMS = {
-    "n_vertical":       N_VERTICAL,
-    "n_horizontal":     N_HORIZONTAL,
-    "fov_deg":          FOV_DEG,
-    "laser_tilt_deg":   LASER_TILT_DEG,
-    "samples_per_line": 250,
-}
+    CAMERA_PARAMS·GRID_PARAMS 는 새 객체로 갈지 않고 제자리에서 갱신한다.
+    synth_scene·inspection 이 import 시점에 이 딕셔너리를 복사해 가므로,
+    객체를 갈아치우면 이미 복사해 간 쪽이 옛 값을 쥔 채 남는다.
+    """
+    global ACTIVE_PROFILE, PIXEL_PITCH_UM, IMAGE_W, IMAGE_H, BASELINE_M
+    global N_VERTICAL, N_HORIZONTAL, LENS_FOCAL_MM, SIGMA_U_PX, LASER_TILT_DEG
+    global SENSOR_COLOR, OPTICAL_FILTER_NM
+    global F_PX, CX_PX, CY_PX, SENSOR_W_MM, SENSOR_H_MM, SENSOR_DIAG_MM
+
+    name = ACTIVE_PROFILE if name is None else name
+    if name not in SPEC_PROFILES:
+        raise ValueError(f"알 수 없는 사양 프로파일: {name}")
+    p = SPEC_PROFILES[name]
+    ACTIVE_PROFILE = name
+    PIXEL_PITCH_UM = p["pixel_pitch_um"]
+    IMAGE_W, IMAGE_H = p["image_w"], p["image_h"]
+    BASELINE_M = p["baseline_m"]
+    N_VERTICAL, N_HORIZONTAL = p["n_vertical"], p["n_horizontal"]
+    LENS_FOCAL_MM = p["lens_focal_mm"]
+    SIGMA_U_PX = p["sigma_u_px"]
+    LASER_TILT_DEG = p["laser_tilt_deg"]
+    SENSOR_COLOR = p["sensor_color"]
+    OPTICAL_FILTER_NM = p["optical_filter_nm"]
+
+    F_PX = focal_px()
+    CX_PX = IMAGE_W / 2.0              # assumed 센서 정중앙. 캘리브레이션 필요
+    CY_PX = IMAGE_H / 2.0              # assumed 동일
+    # 센서 물리 크기 — Isaac Sim 카메라의 aperture 에 그대로 들어간다.
+    SENSOR_W_MM = IMAGE_W * PIXEL_PITCH_UM / 1000.0
+    SENSOR_H_MM = IMAGE_H * PIXEL_PITCH_UM / 1000.0
+    SENSOR_DIAG_MM = float(np.hypot(SENSOR_W_MM, SENSOR_H_MM))
+
+    CAMERA_PARAMS.clear()
+    CAMERA_PARAMS.update({"f_px": round(F_PX, 1), "b_m": BASELINE_M,
+                          "cx_px": CX_PX, "cy_px": CY_PX,
+                          "resolution": [IMAGE_W, IMAGE_H]})
+    GRID_PARAMS.clear()
+    GRID_PARAMS.update({"n_vertical": N_VERTICAL, "n_horizontal": N_HORIZONTAL,
+                        "fov_deg": FOV_DEG, "laser_tilt_deg": LASER_TILT_DEG,
+                        "samples_per_line": 250})
+    return dict(CAMERA_PARAMS)
+
+
+use_profile(ACTIVE_PROFILE)
+
 
 # DOE 발사각 분포 모델
 #   "equal_sine"  회절격자의 실제 거동. m 차 회절광은 sin α_m = m·λ/d 이므로
@@ -225,18 +334,19 @@ def predicted_u(alpha_rad, z_m, camera_params=None):
 # 값의 출처 등급 — 문서·보고서가 이 표를 그대로 쓴다.
 PROVENANCE = {
     "f_px":   ("design",  "PDF 에 초점거리 없음. 8mm = 격자수용·심도·정밀도에서 유도"),
-    "b_m":    ("spec",    "PDF 2.2 광축 150mm. 조립 후 실측 필요"),
+    "b_m":    ("design",  "PDF 원안 150mm. 외형 210mm 내 최대 180mm"),
     "cx_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
     "cy_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
     "fov_deg": ("spec",   "PDF 2.2 120cm 에서 936mm = 42.61°"),
-    "n_lines": ("spec",   "PDF 2.2 수직20 + 수평20 = 400 교점"),
+    "n_lines": ("design", "V선만 깊이를 준다. V만 2배 (PDF 원안 20+20)"),
+    "sensor":  ("design", "모노+대역통과로 σ_u 개선 (PDF 원안 컬러·무필터)"),
     "tilt":    ("design", "레이저 축 수렴각. 기선 시차 이동량을 상쇄한다"),
     "alpha_i": ("assumed", "회절 사인등간격 모델. DOE 실측 α_i 로 대체 필요"),
     "beta_j":  ("assumed", "동일"),
     "R_t":     ("assumed", "R=I, t=(b,0,0). 스테레오 캘리브레이션 필요"),
     "R_ic":    ("assumed", "단위행렬. IMU–카메라 캘리브레이션 필요"),
     "b_a":     ("assumed", "미구현. 가속도계 bias 보정 필요"),
-    "sigma_u": ("assumed", "0.2px 가정. 선검출 반복성 측정 필요"),
+    "sigma_u": ("assumed", "모노+대역통과 기준 목표값. 실장비 측정 필요"),
 }
 
 
@@ -323,13 +433,25 @@ def check_consistency(camera_params=None, grid_params=None,
     return r
 
 
-def sigma_z_mm(z_m, camera_params=None, sigma_u_px=SIGMA_U_PX):
-    """σ_Z = σ_u · Z² / (f · b)  [mm]"""
+def sigma_z_mm(z_m, camera_params=None, sigma_u_px=None):
+    """
+    깊이 잡음  σ_Z = σ_u · Z² / (f · b)  [mm]
+
+    f 를 화소수로 풀어 쓰면 무엇이 정확도를 정하는지 분명해진다.
+    화각을 고정하면 f_px = N_화소 · Z / W_시야 이므로
+
+        σ_Z = σ_u · Z · W_시야 / (N_화소 · b)
+
+    즉 렌즈 초점거리는 독립 변수가 아니다. 담을 면적(W)을 정하면
+    초점거리는 따라오고, 남는 지렛대는 σ_u · N_화소 · b 세 개뿐이다.
+    """
     cp = camera_params or CAMERA_PARAMS
-    return sigma_u_px * z_m ** 2 / (cp["f_px"] * cp["b_m"]) * 1000.0
+    su = SIGMA_U_PX if sigma_u_px is None else sigma_u_px
+    return su * z_m ** 2 / (cp["f_px"] * cp["b_m"]) * 1000.0
 
 
-def depth_of_field(focal_mm=None, f_number=None, focus_m=None, coc_px=2.0):
+def depth_of_field(focal_mm=None, f_number=None, focus_m=None, coc_px=2.0,
+                   pitch_um=None):
     """
     고정 초점 렌즈가 선명하게 담는 거리 범위 [m].
 
@@ -344,7 +466,7 @@ def depth_of_field(focal_mm=None, f_number=None, focus_m=None, coc_px=2.0):
     f = LENS_FOCAL_MM if focal_mm is None else focal_mm
     N = LENS_FNUMBER if f_number is None else f_number
     s = (FOCUS_DISTANCE_M if focus_m is None else focus_m) * 1000.0
-    c = coc_px * PIXEL_PITCH_UM / 1000.0
+    c = coc_px * (PIXEL_PITCH_UM if pitch_um is None else pitch_um) / 1000.0
     H = f * f / (N * c) + f
     near = H * s / (H + (s - f))
     far = H * s / (H - (s - f)) if H > (s - f) else float("inf")
@@ -413,9 +535,40 @@ def fov_mm_at(z_m, camera_params=None):
             2 * z_m * 1000 * cp["cy_px"] / cp["f_px"])
 
 
+def compare_profiles(z=1.2):
+    """두 프로파일의 파생값을 나란히 낸다."""
+    keep = ACTIVE_PROFILE
+    rows = []
+    for name in ("pdf", "improved"):
+        use_profile(name)
+        r = check_consistency(verbose=False)
+        near, far = depth_of_field()
+        rows.append({
+            "name": name, "label": SPEC_PROFILES[name]["label"],
+            "sensor": f"{IMAGE_W}×{IMAGE_H} @{PIXEL_PITCH_UM}µm {SENSOR_COLOR}",
+            "filter": (f"{OPTICAL_FILTER_NM}nm 대역통과"
+                       if OPTICAL_FILTER_NM else "없음"),
+            "f_px": round(F_PX, 1), "b_mm": BASELINE_M * 1000,
+            "lines": f"V{N_VERTICAL} + H{N_HORIZONTAL}",
+            "intersections": N_VERTICAL * N_HORIZONTAL,
+            "sigma_u": SIGMA_U_PX,
+            "tilt": LASER_TILT_DEG,
+            "pitch_mm": round(projection_mm_at(z) / (N_VERTICAL - 1), 1),
+            "sigma_z_mm": round(sigma_z_mm(z), 3),
+            "sigma_z_far_mm": round(sigma_z_mm(WORK_Z_MAX_M), 3),
+            "dof": (round(near, 2), round(far, 2)),
+            "fits": r["fits"], "margin_px": round(min(
+                r["u_range_near"][0], IMAGE_W - r["u_range_far"][1],
+                r["v_range"][0], IMAGE_H - r["v_range"][1]), 0),
+        })
+    use_profile(keep)
+    return rows
+
+
 def summary():
     """현재 캘리브레이션 값과 출처를 표로 출력한다."""
-    lines = ["캘리브레이션 데이터 (B) — 출고 시 1회 측정",
+    lines = [f"캘리브레이션 데이터 (B) — 출고 시 1회 측정   "
+             f"[프로파일: {ACTIVE_PROFILE} — {SPEC_PROFILES[ACTIVE_PROFILE]['label']}]",
              "-" * 78]
     rows = [
         ("f_px",    f"{CAMERA_PARAMS['f_px']} px", "f",       "f_px"),
@@ -423,6 +576,9 @@ def summary():
         ("기선",     f"{BASELINE_M} m",            "b",       "b_m"),
         ("DOE 발산각", f"{GRID_PARAMS['fov_deg']:.2f}°", "—",  "fov_deg"),
         ("격자선 수",  f"수직{N_VERTICAL} + 수평{N_HORIZONTAL}", "—", "n_lines"),
+        ("센서 종류",  f"{SENSOR_COLOR}" + (f" + {OPTICAL_FILTER_NM}nm 필터"
+                                           if OPTICAL_FILTER_NM else ""),
+         "—", "sensor"),
         ("레이저 수렴각", f"{LASER_TILT_DEG}°",         "δ",       "tilt"),
         ("V선 발사각", f"{DOE_ANGLE_MODEL} {N_VERTICAL}분할", "α_i", "alpha_i"),
         ("H선 발사각", f"{DOE_ANGLE_MODEL} {N_HORIZONTAL}분할", "β_j", "beta_j"),
@@ -440,21 +596,56 @@ def summary():
 if __name__ == "__main__":
     print(summary())
     print()
-    print("PDF 사양표에서 그대로 가져온 값")
+    print("사양 프로파일 비교  (LASER_GRID_PROFILE 환경변수로 전환)")
     print("-" * 78)
-    print(f"  해상도        {IMAGE_W}×{IMAGE_H} (5MP), 글로벌 셔터")
-    print(f"  화소 피치      {PIXEL_PITCH_UM}µm  → 센서 "
-          f"{SENSOR_W_MM:.3f}×{SENSOR_H_MM:.3f}mm, 대각 {SENSOR_DIAG_MM:.2f}mm (2/3\u2033)")
-    print(f"  렌즈          F{LENS_FNUMBER}, 초점 {FOCUS_DISTANCE_M}m 고정 "
-          f"(초점거리는 PDF 에 없음)")
-    print(f"  레이저        {LASER_WAVELENGTH_NM}nm, "
-          f"{LASER_POWER_MW[0]}~{LASER_POWER_MW[1]}mW, DOE 단일소자")
-    print(f"  격자          수직{N_VERTICAL} + 수평{N_HORIZONTAL} = "
-          f"{N_VERTICAL*N_HORIZONTAL}교점, 120cm 에서 "
-          f"{projection_mm_at(1.2):.0f}mm")
-    print(f"  기선          {BASELINE_M*1000:.0f}mm")
-    print(f"  작업거리       {WORK_Z_MIN_M}~{WORK_Z_MAX_M}m, "
-          f"목표 평활도 ±{TARGET_SIGMA_MM}mm / 각도 ±{TARGET_ANGLE_DEG}°")
+    rows = compare_profiles()
+    keys = [("label", "프로파일", 16), ("sensor", "센서", 26),
+            ("filter", "광학필터", 16), ("lines", "격자선", 12),
+            ("b_mm", "기선mm", 8), ("sigma_u", "σ_u px", 8),
+            ("f_px", "f_px", 9), ("pitch_mm", "피치@1.2m", 11),
+            ("sigma_z_mm", "σ_Z@1.2m", 10), ("sigma_z_far_mm", "σ_Z@1.5m", 10),
+            ("dof", "심도 m", 16), ("margin_px", "격자여유px", 11)]
+    for k, title, w in keys:
+        line = f"  {title:<12}"
+        for r in rows:
+            line += f"{str(r[k]):<{w}}"
+        print(line)
+    print(f"  → σ_Z 개선 {rows[0]['sigma_z_mm']/rows[1]['sigma_z_mm']:.2f}배, "
+          f"공간 표본 밀도 개선 {rows[0]['pitch_mm']/rows[1]['pitch_mm']:.2f}배")
+    print()
+    print("PDF 2.2 사양표 원문 — 개선안이 지킨 것과 바꾼 것")
+    print("-" * 78)
+    P = SPEC_PROFILES["pdf"]
+    def _cmp(name, pdf_val, now_val, note=""):
+        same = str(pdf_val) == str(now_val)
+        mark = "유지" if same else "변경"
+        print(f"  {name:<14}{str(pdf_val):<24}{str(now_val):<24}[{mark}] {note}")
+    print(f"  {'항목':<14}{'PDF 원문':<24}{'현재 프로파일':<24}")
+    _cmp("해상도", f"{P['image_w']}×{P['image_h']}", f"{IMAGE_W}×{IMAGE_H}",
+         "화소수만 늘림. 센서 크기·화각 동일")
+    _cmp("화소 피치", f"{P['pixel_pitch_um']}µm (>=3.45)",
+         f"{PIXEL_PITCH_UM}µm", "「>=3.45µm」 하한 조건에서 벗어남")
+    _cmp("센서 종류", P["sensor_color"], SENSOR_COLOR, "RGB 문맥영상 상실")
+    _cmp("광학필터", "없음",
+         f"{OPTICAL_FILTER_NM}nm 대역통과" if OPTICAL_FILTER_NM else "없음",
+         "PDF 에 없던 항목 추가")
+    _cmp("기선", f"{P['baseline_m']*1000:.0f}mm", f"{BASELINE_M*1000:.0f}mm",
+         "외형 210mm 내에서 확대")
+    _cmp("격자선", f"V{P['n_vertical']} + H{P['n_horizontal']}",
+         f"V{N_VERTICAL} + H{N_HORIZONTAL}", "깊이를 주는 V선만 증가")
+    _cmp("교점 수", P["n_vertical"] * P["n_horizontal"],
+         N_VERTICAL * N_HORIZONTAL, "")
+    _cmp("DOE 발산각", f"{FOV_DEG:.2f}°", f"{FOV_DEG:.2f}°",
+         "PDF 「120cm 936mm」 그대로")
+    _cmp("레이저", f"{LASER_WAVELENGTH_NM}nm "
+         f"{LASER_POWER_MW[0]}~{LASER_POWER_MW[1]}mW",
+         f"{LASER_WAVELENGTH_NM}nm {LASER_POWER_MW[0]}~{LASER_POWER_MW[1]}mW",
+         "출력 그대로 → 눈 안전등급 재평가 불필요")
+    _cmp("렌즈", f"F{LENS_FNUMBER} 초점 {FOCUS_DISTANCE_M}m 고정",
+         f"F{LENS_FNUMBER} 초점 {FOCUS_DISTANCE_M}m 고정", "초점거리는 PDF 에 없음")
+    _cmp("작업거리", f"{WORK_Z_MIN_M}~{WORK_Z_MAX_M}m",
+         f"{WORK_Z_MIN_M}~{WORK_Z_MAX_M}m", "PDF 권장 유지")
+
     print()
     print("PDF 에 없어 이 코드가 정한 값과 그 근거")
     print("-" * 78)
