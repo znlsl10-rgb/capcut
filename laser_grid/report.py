@@ -73,8 +73,19 @@ _KOREAN_FONT_CANDIDATES = [
     "C:/Windows/Fonts/malgun.ttf",
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
     "/Library/Fonts/AppleGothic.ttf",
+    # 컨테이너·CI 에 흔한 범용 CJK 폰트. 한글 자형이 전용 폰트만은
+    # 못하지만 글자가 □ 로 깨지는 것보다는 낫다.
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
 ]
 _FONT_CACHE = {}
+
+
+def _glyph(font, ch):
+    """글자 하나의 비트맵을 바이트열로. 자형 유무 판별에 쓴다."""
+    m = font.getmask(ch)
+    return bytes(m)
 
 
 def _korean_font(size):
@@ -96,8 +107,10 @@ def _korean_font(size):
             continue
         try:
             f = ImageFont.truetype(fp, key)
-            # 한글이 실제로 들어있는지 확인 (일본어 전용 폰트 배제)
-            if f.getbbox("벽")[2] > 0:
+            # 한글이 실제로 들어있는지 확인. getbbox 만으로는 부족하다 —
+            # 자형이 없는 폰트도 .notdef(□) 를 그리며 폭을 돌려준다.
+            # 서로 다른 두 글자가 같은 비트맵이면 둘 다 □ 라는 뜻이다.
+            if f.getbbox("벽")[2] > 0 and _glyph(f, "벽") != _glyph(f, "철"):
                 _FONT_CACHE[key] = f
                 return f
         except Exception:
@@ -315,6 +328,98 @@ def format_record(record):
 # =====================================================================
 # 3. 오버레이 이미지
 # =====================================================================
+def save_segmentation(path, result, base_image=None, shape=None,
+                      point_px=None, dim=0.35):
+    """
+    세그멘테이션 결과 이미지 — 색깔별로 무엇을 무엇으로 구분했는지.
+
+    격자점을 클래스 색으로 찍고 범례를 얹는다. 화소 단위 마스크가 아니라
+    점을 찍는 이유는, 기하 전용 백엔드에는 애초에 화소 마스크가 없고
+    (3D 점에만 라벨이 붙는다) 실제 검측에 들어간 것도 그 점들이기 때문이다.
+    마스크를 그리면 "칠해졌지만 검측에는 안 쓰인 화소" 가 생겨 결과를
+    실제보다 넓어 보이게 만든다.
+
+    base_image 는 레이저 OFF 프레임을 권장한다. 어둡게 깔아야 점이 뜬다.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+
+    if base_image is not None:
+        arr = np.asarray(base_image)
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, -1)
+        img = (arr[:, :, :3].astype(np.float32) * dim).astype(np.uint8)
+    elif shape is not None:
+        img = np.full((shape[0], shape[1], 3), 24, np.uint8)
+    else:
+        return None
+
+    im = Image.fromarray(img).convert("RGB")
+    W, H = im.size
+    d = ImageDraw.Draw(im)
+    rad = point_px if point_px else max(2, int(round(W / 700.0)))
+
+    counts = {}
+    for r in result.get("regions", []):
+        uv = r.get("point_uv")
+        if uv is None:
+            continue
+        cls = r.get("class")
+        col = CLASS_COLOR.get(cls, (200, 200, 200))
+        if r.get("status") != "measured":
+            col = tuple(int(c * 0.45) for c in col)     # 기각 영역은 어둡게
+        counts[cls] = counts.get(cls, 0) + len(uv)
+        for u, v in np.asarray(uv, float):
+            d.ellipse([u - rad, v - rad, u + rad, v + rad], fill=col)
+
+    # ── 범례 ──
+    fsize = max(14, int(round(H / 48.0)))
+    font = _korean_font(fsize)
+    ko = font is not None
+    rows = [(CLASS_COLOR.get(c, (200,) * 3),
+             f"{CLASS_KO.get(c, c) if ko else CLASS_EN.get(c, c)}  "
+             f"({c}, {n:,}점)" if ko else
+             f"{CLASS_EN.get(c, c)} ({c}, {n} pts)")
+            for c, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+    if rows:
+        if ko:
+            pad, sw, rh = fsize // 2, fsize, int(fsize * 1.5)
+            lw = pad * 2 + sw + pad + max(
+                int(d.textlength(t, font=font)) for _, t in rows)
+            lh = pad * 2 + rh * len(rows)
+            d.rectangle([10, 10, 10 + lw, 10 + lh], fill=(18, 18, 22))
+            y = 10 + pad
+            for col, txt in rows:
+                d.rectangle([10 + pad, y + 3, 10 + pad + sw, y + rh - 6],
+                            fill=col)
+                d.text((10 + pad + sw + pad, y), txt, fill=(240, 240, 240),
+                       font=font)
+                y += rh
+        else:
+            scale = max(1, int(round(W / 700.0)))
+            pad, sw, rh = 4, 12, 13
+            lw = 8 + sw + 4 + max(len(t) for _, t in rows) * 6 + 8
+            leg = Image.new("RGB", (int(lw), pad * 2 + rh * len(rows)),
+                            (18, 18, 22))
+            dl = ImageDraw.Draw(leg)
+            y = pad
+            for col, txt in rows:
+                dl.rectangle([6, y + 2, 6 + sw, y + rh - 3], fill=col)
+                dl.text((6 + sw + 4, y + 2), txt, fill=(240, 240, 240))
+                y += rh
+            leg = leg.resize((leg.width * scale, leg.height * scale),
+                             Image.NEAREST)
+            im.paste(leg, (10, 10))
+
+    dirn = os.path.dirname(os.path.abspath(path))
+    if dirn:
+        os.makedirs(dirn, exist_ok=True)
+    im.save(path)
+    return path
+
+
 def save_overlay(path, result, table_uv=None, label_map=None,
                  base_image=None, class_names=None):
     """

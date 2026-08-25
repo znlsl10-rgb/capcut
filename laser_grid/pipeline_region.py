@@ -348,6 +348,11 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
 
         for part_cls, sub_idx in parts:
             pts = pts_all[sub_idx]
+            # 이 조각이 원래 table 의 몇 번 점인지 끝까지 들고 간다.
+            # 세그멘테이션 결과 이미지를 그리려면 각 점의 화소 좌표가
+            # 필요한데, 아래 선형 정제가 점을 걸러내므로 인덱스를 같이
+            # 걸러야 짝이 맞는다.
+            keep = np.asarray(reg["idx"])[np.asarray(sub_idx)]
 
             # ── 2) 조각별 선형 부재 정제 ──
             # 동바리·철근처럼 가는 부재는 마스크가 몇 px 만 밖으로 밀려도
@@ -370,6 +375,7 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
                         if ax0.get("inlier_frac", 1.0) < 0.999:
                             n_linear_rescued += 1
                         pts = cand
+                        keep = keep[ax0["inlier_mask"]]
                         rescued = True
 
             ev = _EQ5.geometric_evidence(pts, g_hat)
@@ -395,6 +401,9 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
             r["label_fusion_note"] = fu["note"]
             r["geom_shape"] = ev["shape"]
             r["from_split"] = bool(len(parts) > 1)
+            # 결과 이미지·엑셀에서 쓰는 화소 좌표 (검측에는 쓰지 않는다)
+            r["point_uv"] = table["uv"][keep]
+            r["point_idx"] = keep
             results.append(r)
 
     measured = [r for r in results if r["status"] == "measured"]

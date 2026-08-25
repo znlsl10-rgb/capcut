@@ -40,6 +40,8 @@ CALIB = _load("calibration")
 EQ3 = _load("eq3_orientation")
 DETECT = _load("A_선검출")
 PIPE = _load("pipeline_region")
+REPORT = _load("report")
+XLS = _load("report_excel")
 
 
 def read_image(path):
@@ -184,7 +186,8 @@ def check(path, standoff_m):
 # =====================================================================
 # 기본 : 검측
 # =====================================================================
-def inspect(path, off_path, standoff_m, pitch_deg, backend):
+def inspect(path, off_path, standoff_m, pitch_deg, backend, out_dir=None,
+            excel=None, seg_png=None, site=None):
     rgb = read_image(path)
     rgb_off = read_image(off_path) if off_path else None
     cp, scaled = camera_params_for(rgb.shape, standoff_m)
@@ -216,11 +219,46 @@ def inspect(path, off_path, standoff_m, pitch_deg, backend):
     td = np.radians(pitch_deg)
     g_hat = np.array([0.0, np.cos(td), np.sin(td)])
 
-    res = PIPE.inspect_image(detected, lines_xyz, cp, g_hat,
+    res = PIPE.inspect_image(lines_uv, lines_xyz, cp, g_hat,
                              rgb_off=rgb_off, seg_backend=backend,
                              sigma_u_px=CALIB.SIGMA_U_PX)
     print()
     print(PIPE.format_report(res))
+
+    # ── 산출물 ──
+    out_dir = out_dir or _os.path.dirname(_os.path.abspath(path))
+    base = _os.path.splitext(_os.path.basename(path))[0]
+    seg_png = seg_png or _os.path.join(out_dir, f"{base}_seg.png")
+    excel = excel or _os.path.join(out_dir, f"{base}_검측결과.xlsx")
+
+    seg = REPORT.save_segmentation(seg_png, res,
+                                   base_image=(rgb_off if rgb_off is not None
+                                               else rgb),
+                                   shape=rgb.shape)
+    meta = {"입력 이미지": _os.path.basename(path),
+            "레이저 OFF 이미지": (_os.path.basename(off_path) if off_path
+                          else "없음 (초록채널 분리)"),
+            "측정 거리(m)": standoff_m,
+            "장비 하향각(°)": pitch_deg,
+            "이미지 해상도": f"{rgb.shape[1]} × {rgb.shape[0]}",
+            "검출 선 수": len(detected),
+            "삼각측량 점 수": n3d}
+    if site:
+        meta = {"현장": site, **meta}
+    caveats = []
+    if backend == "geom":
+        caveats.append("기하 전용 백엔드는 동바리/기둥/철근과 벽/거푸집/조적을 "
+                       "구분하지 못한다. 적용 KCS 허용치가 달라지므로 "
+                       "부재 종류는 사람이 확인해야 한다.")
+    for k, v in CALIB.provenance().items():
+        if v[0] == "assumed" and k in ("f_px", "fov_deg", "n_lines", "alpha_i"):
+            caveats.append(f"{k} 가 실측이 아닌 가정값이다 — {v[1]}")
+
+    xl = XLS.save_excel(excel, res, meta=meta, seg_image_path=seg,
+                        extra_caveats=caveats)
+    print()
+    print(f"세그멘테이션 이미지: {seg}")
+    print(f"엑셀 조서:          {xl}")
     return 0
 
 
@@ -237,12 +275,18 @@ def main():
                     help="사양 프로파일 (legacy / pdf / improved)")
     ap.add_argument("--check", action="store_true",
                     help="검측 대신 이미지의 격자를 읽어 사양과 대조")
+    ap.add_argument("--out", default=None, help="산출물 폴더 (기본: 이미지와 같은 폴더)")
+    ap.add_argument("--excel", default=None, help="엑셀 조서 경로")
+    ap.add_argument("--seg-png", default=None, help="세그멘테이션 이미지 경로")
+    ap.add_argument("--site", default=None, help="현장명 (조서 머리말)")
     a = ap.parse_args()
     if a.profile:
         CALIB.use_profile(a.profile)
     if a.check:
         return check(a.image, a.standoff)
-    return inspect(a.image, a.off, a.standoff, a.pitch, a.backend)
+    return inspect(a.image, a.off, a.standoff, a.pitch, a.backend,
+                   out_dir=a.out, excel=a.excel, seg_png=a.seg_png,
+                   site=a.site)
 
 
 if __name__ == "__main__":

@@ -98,6 +98,19 @@ SHORING_LENGTH_M = 2.40
 SHORING_X_M = 0.20
 SHORING_Z_M = 1.15
 
+# 철근 — 동바리보다 훨씬 가늘다. D25 이형철근 공칭 Ø25.4mm.
+# 격자 피치가 이 지름의 두 배를 넘으면 부재 하나에 V선이 한 줄도 안
+# 걸릴 수 있다(legacy 70.4mm / pdf 49.3mm / improved 24.0mm). 즉 이
+# 부재는 사양 프로파일에 따라 아예 측정이 안 될 수도 있고, 그 사실을
+# 보여주는 것이 이 부재를 씬에 두는 이유다.
+GT_REBAR_TILT_DEG = 0.8
+REBAR_RADIUS_M = 0.0127
+REBAR_LENGTH_M = 2.00
+REBAR_X_M = -0.26
+REBAR_Z_M = 1.02
+# 기본은 끈다. 켜면 격자점 분포가 달라져 기존 회귀 기준값이 흔들린다.
+WITH_REBAR = False
+
 # 캘리브레이션은 calibration.py 단일 출처
 _CALIB = _load("calibration")
 CAMERA_PARAMS = dict(_CALIB.CAMERA_PARAMS)
@@ -107,7 +120,7 @@ GRID = {"n_vertical": _CALIB.N_VERTICAL,
 SIGMA_U_PX = _CALIB.SIGMA_U_PX
 
 CLASS_IDS = {0: "class:BACKGROUND", 1: "class:wall",
-             2: "class:floor", 3: "class:shoring"}
+             2: "class:floor", 3: "class:shoring", 4: "class:rebar"}
 
 
 def _rx(deg):
@@ -124,8 +137,8 @@ def _unit(v):
 # =====================================================================
 # 씬 기하
 # =====================================================================
-def _build_geometry():
-    """조사기 좌표계에서 벽·바닥·동바리를 정의한다."""
+def _build_geometry(with_rebar=None):
+    """조사기 좌표계에서 벽·바닥·동바리(·철근)를 정의한다."""
     td = np.radians(DEVICE_PITCH_DEG)
     g = np.array([0.0, np.cos(td), np.sin(td)])          # 중력 (아래)
 
@@ -145,11 +158,19 @@ def _build_geometry():
     bx, bz = SHORING_X_M, SHORING_Z_M
     by = (n_floor @ p_floor - n_floor[0] * bx - n_floor[2] * bz) / n_floor[1]
     base = np.array([bx, by, bz])
-    return {"g": g,
-            "wall": {"n": n_wall, "p": p_wall, "half": (0.85, 0.85)},
-            "floor": {"n": n_floor, "p": p_floor, "half": (0.85, 1.30)},
-            "shoring": {"axis": axis, "base": base,
-                        "r": SHORING_RADIUS_M, "len": SHORING_LENGTH_M}}
+    geo = {"g": g,
+           "wall": {"n": n_wall, "p": p_wall, "half": (0.85, 0.85)},
+           "floor": {"n": n_floor, "p": p_floor, "half": (0.85, 1.30)},
+           "shoring": {"axis": axis, "base": base,
+                       "r": SHORING_RADIUS_M, "len": SHORING_LENGTH_M}}
+
+    if WITH_REBAR if with_rebar is None else with_rebar:
+        r_axis = _unit(_rx(GT_REBAR_TILT_DEG) @ g)
+        rx, rz = REBAR_X_M, REBAR_Z_M
+        ry = (n_floor @ p_floor - n_floor[0] * rx - n_floor[2] * rz) / n_floor[1]
+        geo["rebar"] = {"axis": r_axis, "base": np.array([rx, ry, rz]),
+                        "r": REBAR_RADIUS_M, "len": REBAR_LENGTH_M}
+    return geo
 
 
 def _plane_basis(n):
@@ -162,6 +183,33 @@ def _wall_bump(local_uv):
     """벽면 국소좌표에서의 융기 깊이 (m). 평활도 정답."""
     d2 = local_uv[..., 0] ** 2 + local_uv[..., 1] ** 2
     return (GT_BUMP_MM / 1000.0) * np.exp(-d2 / (2 * GT_BUMP_SIGMA_M ** 2))
+
+
+def _cylinder_hit(dirs, origin, s, code, t_best, cid):
+    """유한 원통과의 교차. 동바리·철근이 같은 식을 쓴다."""
+    a, b0, r, L = s["axis"], s["base"], s["r"], s["len"]
+    d_perp = dirs - np.outer(dirs @ a, a)
+    o = np.asarray(origin, float) - b0
+    o_perp = o - (o @ a) * a
+    A = np.einsum("ij,ij->i", d_perp, d_perp)
+    B = 2.0 * (d_perp @ o_perp)
+    C = float(o_perp @ o_perp) - r * r
+    disc = B * B - 4 * A * C
+    ok = (disc > 0) & (A > 1e-12)
+    if not ok.any():
+        return
+    sq = np.sqrt(disc[ok])
+    t1 = (-B[ok] - sq) / (2 * A[ok])
+    t2 = (-B[ok] + sq) / (2 * A[ok])
+    tc = np.where(t1 > 1e-6, t1, t2)
+    hit = np.asarray(origin, float) + dirs[ok] * tc[:, None]
+    axial = (hit - b0) @ a
+    valid = (tc > 1e-6) & (axial >= -L) & (axial <= 0.05)   # 바닥에서 위로
+    idx = np.where(ok)[0][valid]
+    tv = tc[valid]
+    better = tv < t_best[idx]
+    t_best[idx[better]] = tv[better]
+    cid[idx[better]] = code
 
 
 def _intersect(dirs, geo):
@@ -207,37 +255,18 @@ def _intersect(dirs, geo):
         sel = idx[better]
         t_best[sel] = t[sel]; cid[sel] = code
 
-    # 동바리 (유한 원통)
-    s = geo["shoring"]
-    a, b0, r, L = s["axis"], s["base"], s["r"], s["len"]
-    # 광선 p(t)=t·d, 축선 q(u)=b0+u·a  →  축 수직 성분의 이차방정식
-    d_perp = dirs - np.outer(dirs @ a, a)
-    o = -b0
-    o_perp = o - (o @ a) * a
-    A = np.einsum("ij,ij->i", d_perp, d_perp)
-    B = 2.0 * (d_perp @ o_perp)
-    C = float(o_perp @ o_perp) - r * r
-    disc = B * B - 4 * A * C
-    ok = (disc > 0) & (A > 1e-12)
-    if ok.any():
-        sq = np.sqrt(disc[ok])
-        t1 = (-B[ok] - sq) / (2 * A[ok])
-        t2 = (-B[ok] + sq) / (2 * A[ok])
-        tc = np.where(t1 > 1e-6, t1, t2)
-        hit = dirs[ok] * tc[:, None]
-        axial = (hit - b0) @ a
-        valid = (tc > 1e-6) & (axial >= -L) & (axial <= 0.05)   # 바닥에서 위로
-        idx = np.where(ok)[0][valid]
-        tv = tc[valid]
-        better = tv < t_best[idx]
-        t_best[idx[better]] = tv[better]; cid[idx[better]] = 3
+    # 동바리·철근 (유한 원통)
+    _cylinder_hit(dirs, np.zeros(3), geo["shoring"], 3, t_best, cid)
+    if "rebar" in geo:
+        _cylinder_hit(dirs, np.zeros(3), geo["rebar"], 4, t_best, cid)
     return t_best, cid
 
 
 # =====================================================================
 # 씬 생성
 # =====================================================================
-def build_scene(seed=2026, sigma_u_px=SIGMA_U_PX, label_map_stride=2):
+def build_scene(seed=2026, sigma_u_px=SIGMA_U_PX, label_map_stride=2,
+                with_rebar=None):
     """
     합성 씬 한 장을 만든다.
 
@@ -247,7 +276,7 @@ def build_scene(seed=2026, sigma_u_px=SIGMA_U_PX, label_map_stride=2):
         eq5 의 마스크 침식이 어차피 흡수한다).
     """
     rng = np.random.default_rng(seed)
-    geo = _build_geometry()
+    geo = _build_geometry(with_rebar)
     f = CAMERA_PARAMS["f_px"]; b = CAMERA_PARAMS["b_m"]
     cx = CAMERA_PARAMS["cx_px"]; cy = CAMERA_PARAMS["cy_px"]
     W, H = CAMERA_PARAMS["resolution"]
@@ -354,6 +383,7 @@ def build_scene(seed=2026, sigma_u_px=SIGMA_U_PX, label_map_stride=2):
             "gt": {"wall_verticality_deg": GT_WALL_TILT_DEG,
                    "floor_horizontality_deg": GT_FLOOR_TILT_DEG,
                    "shoring_verticality_deg": GT_SHORING_TILT_DEG,
+                   "rebar_verticality_deg": GT_REBAR_TILT_DEG,
                    "wall_bump_mm": GT_BUMP_MM,
                    "device_pitch_deg": DEVICE_PITCH_DEG,
                    "sigma_u_px": sigma_u_px}}
@@ -382,26 +412,9 @@ def _intersect_from(dirs, origin, geo):
         better = t[idx] < t_best[idx]
         t_best[idx[better]] = t[idx[better]]; cid[idx[better]] = code
 
-    s = geo["shoring"]
-    a, b0, r, L = s["axis"], s["base"], s["r"], s["len"]
-    d_perp = dirs - np.outer(dirs @ a, a)
-    o = origin - b0
-    o_perp = o - (o @ a) * a
-    A = np.einsum("ij,ij->i", d_perp, d_perp)
-    B = 2.0 * (d_perp @ o_perp)
-    C = float(o_perp @ o_perp) - r * r
-    disc = B * B - 4 * A * C
-    ok = (disc > 0) & (A > 1e-12)
-    if ok.any():
-        sq = np.sqrt(disc[ok])
-        t1 = (-B[ok] - sq) / (2 * A[ok]); t2 = (-B[ok] + sq) / (2 * A[ok])
-        tc = np.where(t1 > 1e-6, t1, t2)
-        hit = origin + dirs[ok] * tc[:, None]
-        axial = (hit - b0) @ a
-        valid = (tc > 1e-6) & (axial >= -L) & (axial <= 0.05)
-        idx = np.where(ok)[0][valid]; tv = tc[valid]
-        better = tv < t_best[idx]
-        t_best[idx[better]] = tv[better]; cid[idx[better]] = 3
+    _cylinder_hit(dirs, origin, geo["shoring"], 3, t_best, cid)
+    if "rebar" in geo:
+        _cylinder_hit(dirs, origin, geo["rebar"], 4, t_best, cid)
     return t_best, cid
 
 
