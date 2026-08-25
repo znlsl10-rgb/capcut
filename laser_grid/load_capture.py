@@ -172,16 +172,24 @@ def load_folder(path, world_up=(0.0, 0.0, 1.0), stride=1):
             "diag": diag, "meta": meta, "raw": cp_raw, "cast": cast}
 
 
-def _base_image(path, size):
-    """CAM.png 를 센서 크기로 늘려 결과 이미지 배경으로 쓴다."""
+def _base_image(path, size, flipped=False):
+    """
+    CAM.png 를 센서 크기로 늘려 결과 이미지 배경으로 쓴다.
+
+    내보내기가 180° 돌아 있던 캡처는 화소 좌표를 되돌려 놓았으므로
+    배경 그림도 같이 돌려야 한다. 그러지 않으면 검출점이 원본 격자에서
+    좌우로 밀린 채 그려져, 결과가 틀린 것처럼 보인다.
+    """
     for name in ("CAM.png", "CAST.png"):
         fp = os.path.join(path, name)
         if not os.path.exists(fp):
             continue
         try:
             from PIL import Image
-            im = Image.open(fp).convert("RGB").resize(
-                (size[0], size[1]), Image.BICUBIC)
+            im = Image.open(fp).convert("RGB")
+            if flipped:
+                im = im.transpose(Image.ROTATE_180)
+            im = im.resize((size[0], size[1]), Image.BICUBIC)
             return np.asarray(im)
         except Exception:
             return None
@@ -226,7 +234,8 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
     print()
     print(PIPE.format_report(res))
 
-    base = _base_image(path, cp["resolution"])
+    base = _base_image(path, cp["resolution"],
+                       flipped=bool(cap["diag"]["uv 180° 뒤집힘"]))
     seg = REPORT.save_segmentation(os.path.join(out_dir, f"{name}_세그멘테이션.png"),
                                    res, base_image=base,
                                    shape=(cp["resolution"][1], cp["resolution"][0]))

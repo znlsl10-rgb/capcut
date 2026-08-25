@@ -47,6 +47,8 @@ CLASS_COLOR = {"wall": (60, 130, 246), "formwork_wall": (99, 102, 241),
                "slab": (22, 163, 74), "ceiling": (132, 204, 22),
                "shoring": (249, 115, 22), "column": (234, 88, 12),
                "rebar": (239, 68, 68), "background": (110, 110, 110)}
+# 요철 표시색 — 부재 색 어느 것과도 겹치지 않는 자홍
+DEFECT_COLOR = (236, 72, 153)
 VERDICT_COLOR = {"합격": (34, 197, 94), "기준초과": (239, 68, 68),
                  "측정불가": (148, 163, 184), "판정보류(분해능)": (234, 179, 8)}
 
@@ -329,7 +331,7 @@ def format_record(record):
 # 3. 오버레이 이미지
 # =====================================================================
 def save_segmentation(path, result, base_image=None, shape=None,
-                      point_px=None, dim=0.35):
+                      point_px=None, dim=0.62, show_defects=True):
     """
     세그멘테이션 결과 이미지 — 색깔별로 무엇을 무엇으로 구분했는지.
 
@@ -339,7 +341,12 @@ def save_segmentation(path, result, base_image=None, shape=None,
     마스크를 그리면 "칠해졌지만 검측에는 안 쓰인 화소" 가 생겨 결과를
     실제보다 넓어 보이게 만든다.
 
-    base_image 는 레이저 OFF 프레임을 권장한다. 어둡게 깔아야 점이 뜬다.
+    base_image 는 레이저 OFF 프레임을 권장한다. dim 으로 밝기를 조절한다.
+    너무 어둡게 깔면 점은 잘 보이지만 어느 부재 위에 찍힌 것인지 알 수
+    없어진다 — 결과를 확인하려면 원본이 함께 보여야 한다.
+
+    show_defects 가 참이면 검출된 요철 덩어리를 원과 깊이 값으로 표시한다.
+    "요철 2곳 검출" 이라는 숫자만으로는 어디를 다시 봐야 할지 알 수 없다.
     """
     try:
         from PIL import Image, ImageDraw
@@ -374,15 +381,55 @@ def save_segmentation(path, result, base_image=None, shape=None,
         for u, v in np.asarray(uv, float):
             d.ellipse([u - rad, v - rad, u + rad, v + rad], fill=col)
 
-    # ── 범례 ──
+    # ── 요철 위치 ──
     fsize = max(14, int(round(H / 48.0)))
     font = _korean_font(fsize)
     ko = font is not None
+    n_def = 0
+    if show_defects:
+        for r in result.get("regions", []):
+            f = r.get("flatness") or {}
+            for k, dd in enumerate(f.get("defects") or []):
+                n_def += 1
+                x0, y0, x1, y1 = dd["bbox_px"]
+                cxp, cyp = dd["center_px"]
+                # 반지름은 덩어리 크기에 맞추되 너무 작아지지 않게 둔다
+                rad = max(np.hypot(x1 - x0, y1 - y0) / 2.0, W / 90.0)
+                col = DEFECT_COLOR
+                for wdt, off in ((max(3, W // 500), 0), (max(2, W // 800), 6)):
+                    d.ellipse([cxp - rad - off, cyp - rad - off,
+                               cxp + rad + off, cyp + rad + off],
+                              outline=col, width=wdt)
+                tick = rad * 0.35
+                d.line([cxp - tick, cyp, cxp + tick, cyp], fill=col, width=2)
+                d.line([cxp, cyp - tick, cxp, cyp + tick], fill=col, width=2)
+                txt = f"요철 {dd['depth_mm']:.1f}mm" if ko \
+                    else f"defect {dd['depth_mm']:.1f}mm"
+                tw = int(d.textlength(txt, font=font)) if ko else len(txt) * 6
+                # 라벨이 화면 밖으로 나가지 않게 붙일 쪽을 고른다.
+                # 요철이 가장자리에 있을 때가 오히려 흔하다(면 경계).
+                tx = cxp + rad + 12
+                if tx + tw + 10 > W:
+                    tx = cxp - rad - 12 - tw
+                tx = min(max(tx, 8), W - tw - 8)
+                ty = min(max(cyp - fsize, 8), H - fsize - 8)
+                if ko:
+                    d.rectangle([tx - 6, ty - 4, tx + tw + 6, ty + fsize + 6],
+                                fill=(18, 18, 22))
+                    d.text((tx, ty), txt, fill=col, font=font)
+                else:
+                    d.text((tx, ty), txt, fill=col)
+
+    # ── 범례 ──
     rows = [(CLASS_COLOR.get(c, (200,) * 3),
              f"{CLASS_KO.get(c, c) if ko else CLASS_EN.get(c, c)}  "
              f"({c}, {n:,}점)" if ko else
              f"{CLASS_EN.get(c, c)} ({c}, {n} pts)")
             for c, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+    if n_def:
+        rows.append((DEFECT_COLOR,
+                     f"요철 {n_def}곳 (원 표시)" if ko
+                     else f"defects: {n_def} (circled)"))
     if rows:
         if ko:
             pad, sw, rh = fsize // 2, fsize, int(fsize * 1.5)

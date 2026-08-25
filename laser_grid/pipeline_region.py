@@ -54,6 +54,62 @@ FLATNESS_TOL_MM = {"wall": 7.0, "plaster_wall": 10.0, "masonry": 10.0,
 # =====================================================================
 # 영역 1개 검측
 # =====================================================================
+def _defects_in_image(fd, camera_params):
+    """
+    검출된 요철 덩어리를 화면 좌표로 옮긴다.
+
+    eq4 는 요철을 **면내 좌표(u,v)** 로 돌려준다. 평활도 계산에는 그것이
+    맞지만, 조서를 읽는 사람은 "벽 어디가 튀어나왔나" 를 그림에서 보고
+    싶어 한다. 면내 좌표를 3D 로 되돌린 뒤 카메라로 투영한다.
+
+        P = origin + u·e1 + v·e2        (w 는 mm 단위라 투영에 영향이 없다)
+        u_px = f·(X − b)/Z + c_x,  v_px = f·Y/Z + c_y
+
+    투영식에 −b 가 들어가는 것은 카메라가 조사기에서 X 로 b 만큼 떨어져
+    있기 때문이다(eq1 과 같은 규약).
+    """
+    clusters = fd.get("verified_clusters") or []
+    if not clusters or fd.get("basis") is None:
+        return []
+    e1, e2, _ = fd["basis"]
+    origin = np.asarray(fd["origin"], float)
+    # cand_points_uv 가 클러스터 point_idx 의 기준 배열이다.
+    cand_uv = np.asarray(fd.get("cand_points_uv")
+                         if fd.get("cand_points_uv") is not None
+                         else fd.get("defect_points_uv"))
+    f = float(camera_params["f_px"]); b = float(camera_params["b_m"])
+    cx = float(camera_params["cx_px"]); cy = float(camera_params["cy_px"])
+
+    out = []
+    for c in clusters:
+        idx = np.asarray(c["point_idx"], dtype=int)
+        if len(cand_uv) and idx.max() < len(cand_uv):
+            uv = cand_uv[idx]
+        else:
+            # 기준 배열을 못 얻으면 덩어리 중심 하나만 표시한다.
+            # 잘못된 배열을 인덱싱해 엉뚱한 위치를 그리는 것보다 낫다.
+            uv = np.array([c["center_xy"]], dtype=float)
+        P = origin + np.outer(uv[:, 0], e1) + np.outer(uv[:, 1], e2)
+        Z = P[:, 2]
+        ok = Z > 1e-6
+        if not ok.any():
+            continue
+        P = P[ok]; Z = Z[ok]
+        up = f * (P[:, 0] - b) / Z + cx
+        vp = f * P[:, 1] / Z + cy
+        out.append({
+            "center_px": [round(float(up.mean()), 1), round(float(vp.mean()), 1)],
+            "bbox_px": [round(float(up.min()), 1), round(float(vp.min()), 1),
+                        round(float(up.max()), 1), round(float(vp.max()), 1)],
+            "depth_mm": round(float(c["depth_mm"]), 2),
+            "extent_mm": round(float(c["extent_mm"]), 1),
+            "n_points": int(c["n_points"]),
+            "z_m": round(float(np.median(Z)), 3),
+        })
+    out.sort(key=lambda d: -abs(d["depth_mm"]))
+    return out
+
+
 def measure_region(points_3d, cls, g_hat, camera_params,
                    flatness_threshold_mm=1.5, sigma_u_px=0.2,
                    target_sigma_mm=2.0, member_length_m=None):
@@ -166,6 +222,7 @@ def measure_region(points_3d, cls, g_hat, camera_params,
             "defect_clusters": len(fd["verified_clusters"]),
             "defect_count": fd["defect_count"],
             "reject_reason": fd.get("reject_reason")}
+    flat["defects"] = _defects_in_image(fd, camera_params)
 
     kcs = _EQ6.judge_kcs_flatness(
         pts, cls, plane=plane,

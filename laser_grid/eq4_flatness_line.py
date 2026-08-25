@@ -448,6 +448,11 @@ def detect_defects_region(points_3d, plane=None, threshold_mm=1.5,
             'uvw': uvw, 'smoothed_uvw': smoothed,
             'residuals_mm': res_mm,
             'defect_points_uv': d_uv, 'defect_residuals_mm': d_res,
+            # 클러스터의 point_idx 는 **후보 배열(cand_uv)** 기준이다.
+            # 위의 defect_points_uv 는 검증된 클러스터만 이어붙인 부분집합이라
+            # 같은 인덱스로 접근하면 엉뚱한 점을 집는다. 요철 위치를 화면에
+            # 되돌리려면 원본 후보 배열이 필요하므로 함께 돌려준다.
+            'cand_points_uv': cand_uv, 'cand_residuals_mm': cand_res,
             'defect_count': int(len(d_uv)),
             'overall_max_dev_mm': overall_max,
             'raw_max_dev_mm': float(np.max(np.abs(res_mm))),

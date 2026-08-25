@@ -326,8 +326,48 @@ def _sheet_flatness(wb, openpyxl, result):
     return ws
 
 
+def _sheet_defects(wb, openpyxl, result, seg_image_path=None):
+    """검출된 요철이 화면 어디에 있는가."""
+    ws = wb.create_sheet("6.요철위치")
+    ws.append(["No", "부재", "요철", "깊이(mm)", "크기(mm)",
+               "화면 중심 u,v (px)", "화면 범위 u1,v1–u2,v2 (px)",
+               "측정거리(m)", "구성 점수"])
+    n = 0
+    for i, r in enumerate(result.get("regions", [])):
+        f = r.get("flatness") or {}
+        for k, dd in enumerate(f.get("defects") or []):
+            n += 1
+            x0, y0, x1, y1 = dd["bbox_px"]
+            ws.append([i + 1, CLASS_KO.get(r.get("class"), r.get("class")),
+                       k + 1, dd["depth_mm"], dd["extent_mm"],
+                       f"{dd['center_px'][0]:.0f}, {dd['center_px'][1]:.0f}",
+                       f"{x0:.0f}, {y0:.0f} – {x1:.0f}, {y1:.0f}",
+                       dd["z_m"], dd["n_points"]])
+    if n == 0:
+        ws.append(["", "검출된 요철 없음", "", "", "", "", "", "", ""])
+    _style(ws, openpyxl, widths=[5, 11, 6, 11, 11, 20, 26, 11, 10])
+    ws.append([])
+    ws.append(["읽는 법", "화면 좌표는 센서 화소 기준이며, 세그멘테이션 "
+               "이미지에 자홍색 원으로 같은 위치가 표시된다. 깊이는 평활값이 "
+               "아니라 그 자리의 원시 잔차에서 잰 값이다 — 평활 창이 요철보다 "
+               "넓으면 깊이를 깎기 때문이다."])
+    if seg_image_path and _os.path.exists(seg_image_path):
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            from PIL import Image as PILImage
+            with PILImage.open(seg_image_path) as im:
+                w, h = im.size
+            sc = min(1.0, 900.0 / max(w, 1))
+            xi = XLImage(seg_image_path)
+            xi.width, xi.height = int(w * sc), int(h * sc)
+            ws.add_image(xi, f"A{ws.max_row + 3}")
+        except Exception:
+            pass
+    return ws
+
+
 def _sheet_caveats(wb, openpyxl, record, extra=None):
-    ws = wb.create_sheet("6.유의사항")
+    ws = wb.create_sheet("7.유의사항")
     ws.append(["구분", "내용"])
     for c in record.get("caveats", []):
         ws.append(["측정", c])
@@ -367,6 +407,7 @@ def save_excel(path, result, meta=None, label_pixels=None,
                         seg_image_path)
     _sheet_results(wb, openpyxl, record)
     _sheet_flatness(wb, openpyxl, result)
+    _sheet_defects(wb, openpyxl, result, seg_image_path)
     _sheet_caveats(wb, openpyxl, record, extra_caveats)
     d = _os.path.dirname(_os.path.abspath(path))
     if d:
