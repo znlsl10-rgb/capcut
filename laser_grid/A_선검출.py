@@ -251,7 +251,7 @@ def _local_spacings(lids, line_angles, camera_params, img_dim, axis="V"):
     -------
     {lid: spacing_px}
     """
-    f = camera_params.get("f_px", 3478.3)
+    f = camera_params.get("f_px", 2318.8)
     n = len(lids)
     if n < 2:
         return {lids[0]: img_dim / max(n, 1)} if lids else {}
@@ -267,7 +267,7 @@ def _local_spacings(lids, line_angles, camera_params, img_dim, axis="V"):
         if "angle_rad" in a and a.get("fixed") == fixed_key:
             angs[lid] = a["angle_rad"]
         else:
-            angs[lid] = -fov/2 + idx * fov / max(n - 1, 1)
+            angs[lid] = _fan_angle(idx, n, fov)
 
     # 각 선의 이미지 투영 좌표 (u 또는 v)
     proj = {lid: f * np.tan(angs[lid]) for lid in lids}
@@ -290,7 +290,7 @@ def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
     기하 원리: u = f · tan(α) + cx
     α = V선의 수평 발산각 (line_angles에서 가져오거나 fov_h에서 등간격 계산)
     """
-    f  = camera_params.get("f_px", 3478.3)
+    f  = camera_params.get("f_px", 2318.8)
     cx = camera_params.get("cx_px", camera_params.get("cx", W_default(camera_params)/2))
 
     # line_angles에 angle_rad가 있으면 우선 사용
@@ -302,12 +302,12 @@ def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
         idx   = int(lid[1:])
         n_v   = camera_params.get("n_v", 20)
         fov_h = np.radians(camera_params.get("fov_h_deg", 42.61))
-        alpha = -fov_h/2 + idx * fov_h / max(n_v - 1, 1)
+        alpha = _fan_angle(idx, n_v, fov_h)
 
     # 기선 시차 보정 — 이 항이 없으면 예측이 통째로 어긋난다.
     #   u = f·tan(α) − f·b/Z + c_x
     # 두 번째 항은 카메라가 레이저에서 b 만큼 떨어져 있어 생기는 이동이며,
-    # f=3478, b=150mm, Z=1.2m 에서 435px 에 이른다. 추적 밴드는 20~50px
+    # f=2319, b=150mm, Z=1.2m 에서 290px 에 이른다. 추적 밴드는 20~50px
     # 이므로 이 항을 빼면 밴드가 실제 선 근처에 놓이지도 않는다.
     b = camera_params.get("b_m", 0.150)
     z_mm = camera_params.get("standoff_z", 1200.0)
@@ -322,7 +322,7 @@ def _geom_v_for_hline(lid, camera_params, W_img, line_angles):
     H선 하나에 대해 각 열(0~W_img-1)에서의 예측 v값 반환.
     기하 원리: v = f · tan(β) + cy
     """
-    f  = camera_params.get("f_px", 3478.3)
+    f  = camera_params.get("f_px", 2318.8)
     cy = camera_params.get("cy_px", camera_params.get("cy", H_default(camera_params)/2))
 
     ang = line_angles.get(lid, {})
@@ -333,10 +333,22 @@ def _geom_v_for_hline(lid, camera_params, W_img, line_angles):
         n_h   = camera_params.get("n_h", 20)
         fov_v = np.radians(camera_params.get("fov_v_deg",
                             camera_params.get("fov_h_deg", 42.61)))
-        beta  = -fov_v/2 + idx * fov_v / max(n_h - 1, 1)
+        beta  = _fan_angle(idx, n_h, fov_v)
 
     v_pred = f * np.tan(beta) + cy
     return np.full(W_img, v_pred, dtype=float)
+
+
+def _fan_angle(idx, n, fov_rad):
+    """
+    DOE 가 만드는 idx 번째 광선의 발사각 [rad] — 사인 등간격.
+
+    회절격자는 sin θ_m = m·λ/d 이므로 발사각이 사인 등간격이지 각도
+    등간격이 아니다. calibration._fan_angles 와 같은 식이며, line_angles
+    에 실측 α_i 가 없을 때만 쓰이는 대비값이다.
+    """
+    t = -1.0 + 2.0 * idx / max(n - 1, 1)
+    return float(np.arcsin(np.sin(fov_rad / 2.0) * t))
 
 
 def W_default(cp): return cp.get("image_w", 2448)
@@ -627,7 +639,7 @@ def _grid_joint_refine(out, v_lids, h_lids, line_angles, camera_params,
     -------
     n_adjusted : int  보정된 교차점 수
     """
-    f  = camera_params.get("f_px", 3478.3)
+    f  = camera_params.get("f_px", 2318.8)
     cx = camera_params.get("cx_px", W_img / 2.0)
     cy = camera_params.get("cy_px", H_img / 2.0)
     fov_h = np.radians(camera_params.get("fov_h_deg", 42.61))
@@ -635,7 +647,7 @@ def _grid_joint_refine(out, v_lids, h_lids, line_angles, camera_params,
     n_v, n_h = len(v_lids), len(h_lids)
 
     def _theory(idx, n, fov, c):
-        a = -fov/2 + idx * fov / max(n-1, 1)
+        a = _fan_angle(idx, n, fov)
         return f * np.tan(a) + c
 
     def _fit_axis(lids, coord_idx, n, fov, c):

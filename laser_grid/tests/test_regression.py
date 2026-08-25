@@ -30,6 +30,7 @@ EQ3 = _load("eq3_orientation")
 EQ5 = _load("eq5_region_assign")
 PIPE = _load("pipeline_region")
 SYN = _load("synth_scene")
+CALIB = _load("calibration")
 
 _FAILS = []
 
@@ -40,6 +41,77 @@ def check(name, cond, detail=""):
     if not cond:
         _FAILS.append(name)
     return cond
+
+
+def test_hardware_spec():
+    """
+    캘리브레이션 값이 PDF 2.2 하드웨어 사양과 어긋나지 않는지.
+
+    이 그룹이 있는 이유 — 이전 버전은 렌즈 12mm 를 "PDF 사양" 이라고
+    적어 두었지만 PDF 는 초점거리를 명시한 적이 없다. 12mm 로는 DOE
+    격자(120cm 936mm)가 센서에 담기지 않고 고정 초점 심도도 작업거리를
+    못 덮는데, 검사가 없어 조용히 넘어갔다.
+    """
+    print("\n[0] 하드웨어 사양 정합성 — PDF 2.2")
+    C = CALIB
+    check(f"해상도 {C.IMAGE_W}×{C.IMAGE_H} = 사양",
+          (C.IMAGE_W, C.IMAGE_H) == (2448, 2048))
+    check(f"화소 {C.PIXEL_PITCH_UM}µm ≥ 사양 3.45µm", C.PIXEL_PITCH_UM >= 3.45)
+    check(f"기선 {C.BASELINE_M*1000:.0f}mm = 사양 150mm",
+          abs(C.BASELINE_M - 0.150) < 1e-9)
+    check(f"격자 수직{C.N_VERTICAL}+수평{C.N_HORIZONTAL} = "
+          f"{C.N_VERTICAL*C.N_HORIZONTAL}교점 = 사양 400교점",
+          C.N_VERTICAL * C.N_HORIZONTAL == 400)
+    proj = C.projection_mm_at(1.2)
+    check(f"120cm 투사폭 {proj:.0f}mm = 사양 936mm", abs(proj - 936.0) < 1.0)
+    check(f"센서 대각 {C.SENSOR_DIAG_MM:.2f}mm ≥ 2/3\u2033(11.0mm)",
+          C.SENSOR_DIAG_MM >= 10.9)
+
+    # 사양이 서로 모순되지 않는지 — 여기서 걸러야 실장비에서 안 걸린다
+    r = C.check_consistency(verbose=False)
+    check(f"격자가 {C.WORK_Z_MIN_M}~{C.WORK_Z_MAX_M}m 내내 센서 안 "
+          f"(u {r['u_range_near'][0]:.0f}..{r['u_range_far'][1]:.0f}, "
+          f"v {r['v_range'][0]:.0f}..{r['v_range'][1]:.0f})", r["fits"])
+    near, far = C.depth_of_field()
+    check(f"고정초점 {C.FOCUS_DISTANCE_M}m 심도 {near:.2f}~{far:.2f}m 가 "
+          f"작업거리를 덮음",
+          near <= C.WORK_Z_MIN_M and far >= C.WORK_Z_MAX_M)
+    sz = C.sigma_z_mm(C.WORK_Z_MAX_M)
+    check(f"최원거리 깊이잡음 {sz:.2f}mm ≤ 목표 ±{C.TARGET_SIGMA_MM}mm",
+          sz <= C.TARGET_SIGMA_MM)
+
+    # Isaac 카메라에 넣을 값이 f_px 를 그대로 재현하는지
+    icp = C.isaac_camera_params()
+    f_from_usd = (icp["focal_length_mm"] * icp["resolution"][0]
+                  / icp["horizontal_aperture_mm"])
+    check(f"Isaac 카메라 설정 → f_px {f_from_usd:.1f} = {C.F_PX:.1f}",
+          abs(f_from_usd - C.F_PX) < 0.5)
+
+    # 탈락시킨 초점거리가 실제로 탈락하는지 (근거가 살아 있는지)
+    bad = []
+    for fmm in (10.0, 12.0, 16.0):
+        cp = {**C.CAMERA_PARAMS, "f_px": C.focal_px(fmm)}
+        n, fr = C.depth_of_field(fmm)
+        if C.check_consistency(cp, verbose=False)["fits"] and \
+           n <= C.WORK_Z_MIN_M and fr >= C.WORK_Z_MAX_M:
+            bad.append(fmm)
+    check(f"10/12/16mm 는 격자 수용·심도에서 탈락 (통과 {len(bad)}건)"
+          + (f" — {bad}" if bad else ""), not bad)
+
+    # DOE 사인등간격 모델 — 바깥 포락선은 등각도와 같아야 한다
+    s = C._fan_angles(C.N_VERTICAL, C.FOV_DEG, "equal_sine")
+    a = C._fan_angles(C.N_VERTICAL, C.FOV_DEG, "equal_angle")
+    check(f"DOE 사인등간격 — 포락선 ±{np.degrees(s[-1]):.2f}° 는 등각도와 동일",
+          abs(s[0] - a[0]) < 1e-12 and abs(s[-1] - a[-1]) < 1e-12)
+    # 두 모델의 차이가 얼마나 큰 문제인지 — 각도가 아니라 깊이로 환산해야
+    # 판단이 선다. α 를 잘못 알면 u 가 맞아도 Z 가 틀어진다.
+    #     Z = f·b / (f·tanα − (u−c_x))  →  dZ/dα ≈ Z²/b · sec²α
+    d = float(np.max(np.abs(s - a)))
+    z = 1.2
+    dz_mm = d * z * z / C.BASELINE_M * 1000.0
+    check(f"DOE 모델 오선택 시 1.2m 깊이오차 {dz_mm:.0f}mm — 목표 "
+          f"±{C.TARGET_SIGMA_MM}mm 를 크게 넘으므로 실측 α_i 가 필수",
+          dz_mm > C.TARGET_SIGMA_MM)
 
 
 def test_eq1_triangulation():
@@ -226,16 +298,36 @@ def test_segmentation_robustness():
               f"{worst_err(r):.4f}° ≤ 0.5°", worst_err(r) <= 0.5)
 
     # 라벨 오분류 — 두 부재가 한 라벨로 병합되는 최악의 경우
-    fails = []
+    #
+    # 두 가지를 구분해서 본다. 틀린 값을 내놓는 것과, 근거가 모자라 아예
+    # 재지 않는 것은 성질이 다르다. 검측 장비에서 전자는 사고로 이어지고
+    # 후자는 재촬영으로 끝난다. 그래서 "측정한 값은 반드시 맞을 것" 을
+    # 무조건 조건으로 두고, "몇 개를 measured 로 남기는가" 는 훼손 정도에
+    # 따라 다르게 요구한다.
+    #
+    # PDF 실사양(DOE 42.61°, 20×20)에서는 1.2m 격자 피치가 49.3mm 라
+    # Ø48.6mm 동바리에 걸리는 V선이 한두 개뿐이다. 라벨이 67% 넘게
+    # 뒤섞이면 그 몇 개마저 흩어져 축적합이 성립하지 않는 경우가 생긴다.
+    # 이때 측정을 포기하는 것이 옳은 동작이다.
+    wrong, dropped = [], []
     for p in (0.34, 0.67, 1.0):
         for t in range(3):
             lm = EXP.perturb_mask(scene["label_map"], "mislabel", p,
                                   np.random.default_rng(1000 + t))
             r = EXP.run_once(scene, lm, "gt")
-            if worst_err(r) > 0.5:
-                fails.append(f"p={p} 시행{t}")
-    check(f"라벨 오분류 9종 전부 복구 (실패 {len(fails)}건)"
-          + (f" — {fails}" if fails else ""), not fails)
+            errs = r["errors_deg"]
+            if errs and max(errs.values()) > 0.5:
+                wrong.append(f"p={p} 시행{t}")
+            if r["missing"]:
+                dropped.append((p, t, r["missing"]))
+    check(f"라벨 오분류 9종 — 측정한 값은 모두 정확 (오답 {len(wrong)}건)"
+          + (f" — {wrong}" if wrong else ""), not wrong)
+    mild = [d for d in dropped if d[0] <= 0.34]
+    check(f"라벨 34% 오분류까지는 세 부재 모두 측정 (누락 {len(mild)}건)"
+          + (f" — {mild}" if mild else ""), not mild)
+    if dropped:
+        print(f"       (참고) 심한 훼손에서 측정 포기 {len(dropped)}건: "
+              f"{[(p, m) for p, _, m in dropped]}")
 
     # 부재 누락 — 남은 부재는 영향받지 않아야 한다
     lm = scene["label_map"].copy(); lm[lm == 3] = 0        # 동바리 삭제
@@ -264,7 +356,7 @@ def main():
     print("=" * 70)
     print("레이저 그리드 품질검측 — 회귀 검증")
     print("=" * 70)
-    for t in (test_eq1_triangulation, test_eq3_backward_compat,
+    for t in (test_hardware_spec, test_eq1_triangulation, test_eq3_backward_compat,
               test_gravity_paths_agree, test_tls_plane_vs_legacy,
               test_axis_fit, test_region_pipeline,
               test_segmentation_robustness, test_boundary_rejection):

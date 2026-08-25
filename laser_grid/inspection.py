@@ -37,10 +37,10 @@ __spec = __ilu.spec_from_file_location(
                                   "calibration.py"))
 CALIB = __ilu.module_from_spec(__spec); __spec.loader.exec_module(CALIB)
 
-# 카메라: 렌즈 12mm F2.0 / 센서 Sony IMX264 3.45µm / 2448×2048  (PDF 2.2)
-#   f_px = 12mm / 3.45µm = 3478.3 px
+# 카메라: 8mm F2.0 저왜곡 / 센서 3.45µm / 2448×2048  (PDF 2.2)
+#   f_px = 8mm / 3.45µm = 2318.8 px
 CAMERA_PARAMS = dict(CALIB.CAMERA_PARAMS)
-# 격자: 수직 21선 + 수평 21선, DOE 발산각 42.61° (투사 936mm @1.2m)
+# 격자: 수직 20 + 수평 20 (400교점), DOE 발산각 42.61° (투사 936mm @1.2m)
 GRID_PARAMS = dict(CALIB.GRID_PARAMS)
 
 STATIONS = {
@@ -388,27 +388,37 @@ def _boost_lighting(stage):
 
 
 def _setup_camera(stage):
-    """카메라 생성 + 핀홀 파라미터 세팅 (AP_MM=W_px → 1px=1mm → FOV 수식과 동일)."""
-    W_px,H_px = CAMERA_PARAMS["resolution"]
-    f_px = CAMERA_PARAMS["f_px"]
-    cx_px,cy_px = CAMERA_PARAMS["cx_px"],CAMERA_PARAMS["cy_px"]
+    """
+    검측 카메라 생성 — 실물 사양을 그대로 넣는다 (PDF 2.2).
 
-    UsdGeom.Xform.Define(stage,"/World/InspectionRig")
-    cam=Camera(prim_path="/World/InspectionRig/InspectionCamera",
-               resolution=(W_px,H_px))
+    USD 카메라의 화각은 focal_length / horizontal_aperture 로 정해지므로,
+    센서 실물 크기(2448·3.45µm = 8.4456mm)를 aperture 에 넣고 초점거리를
+    8mm 로 두면 렌더된 이미지의 픽셀 좌표가 삼각측량식의 u, v 와 정확히
+    같은 뜻을 갖는다.
+
+        f_px = focal_length · resolution_x / horizontal_aperture = 2318.8
+
+    이전에는 aperture 를 36mm 로 고정하고 초점거리를 51.15mm 로 역산했다.
+    f_px 는 같았지만 f-stop·초점거리가 실물과 달라, 심도나 렌즈 효과를
+    켜는 순간 사양과 다른 이미지가 나온다.
+    """
+    icp = CALIB.isaac_camera_params()
+    W_px, H_px = icp["resolution"]
+
+    UsdGeom.Xform.Define(stage, "/World/InspectionRig")
+    cam = Camera(prim_path="/World/InspectionRig/InspectionCamera",
+                 resolution=(W_px, H_px))
     cam.initialize()
 
-    # 원본 방식: ap=36mm 기준으로 fmm 역산 → FOV 정상 (F < AP)
-    AP_MM = 36.0
-    F_MM  = float(f_px) * AP_MM / float(W_px)   # = 51.15mm
-    AP_V  = AP_MM * H_px / W_px                  # 세로 aperture
     try:
-        cp=stage.GetPrimAtPath("/World/InspectionRig/InspectionCamera")
-        uc=UsdGeom.Camera(cp)
-        uc.GetFocalLengthAttr().Set(F_MM)
-        uc.GetHorizontalApertureAttr().Set(AP_MM)
-        uc.GetVerticalApertureAttr().Set(AP_V)
-        uc.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 50.0))
+        cp = stage.GetPrimAtPath("/World/InspectionRig/InspectionCamera")
+        uc = UsdGeom.Camera(cp)
+        uc.GetFocalLengthAttr().Set(icp["focal_length_mm"])
+        uc.GetHorizontalApertureAttr().Set(icp["horizontal_aperture_mm"])
+        uc.GetVerticalApertureAttr().Set(icp["vertical_aperture_mm"])
+        uc.GetFStopAttr().Set(0.0)          # 0 = 핀홀. 심도 실험 시 2.0 으로
+        uc.GetFocusDistanceAttr().Set(icp["focus_distance_m"])
+        uc.GetClippingRangeAttr().Set(Gf.Vec2f(*icp["clipping_range_m"]))
     except Exception as e:
         LOG(f"  [경고] 카메라 파라미터: {e}")
 

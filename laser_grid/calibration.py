@@ -14,54 +14,102 @@ synth_scene.py 가 같은 값을 따로 들고 있었고 A_선검출·eq5 는 �
   부정확하면 알고리즘이 정확해도 결과가 틀어진다.
 
 【값의 출처를 세 등급으로 구분한다】
-  spec    PDF 하드웨어 사양에서 유도 (부품 번호가 있는 실물 기준)
-  design  설계 고정값 (용역서에 명시)
+  spec    PDF 2.2 사양표에 직접 적힌 값, 또는 그것만으로 유도되는 값
+  design  PDF 에 없어 이 코드가 정한 값. 근거를 주석에 남긴다.
   assumed 가정값 — 출고 전 실측으로 대체해야 함
 
   assumed 로 남은 항목이 현재 측정 신뢰도의 상한이다.
+
+【PDF 사양표를 그대로 옮기면 이렇다 (2.2)】
+  카메라   2448×2048 (5MP), 글로벌 셔터 CMOS, 2/3″ 이상, 픽셀 ≥3.45µm
+           노출 ≤50µs, 외부 HW 트리거, USB3/UVC
+  렌즈     저왜곡 F2.0급, 초점 ~1.2m 고정 잠금      ← 초점거리 값은 없음
+  레이저   녹색 520nm LD, 30~49mW, DOE 단일소자
+           수직 20 + 수평 20 (400 교점 정방형 격자)
+           격자 투사 범위 120cm 에서 약 936×936mm
+  기선     카메라–레이저 광축 150mm
+  IMU      6축, 촬영 순간 중력벡터
+  측정거리 권장 1~1.5m,  목표 평활도 ±2mm / 수직·수평 ±0.5°  (1.1)
+
+  이 표에서 자유롭게 남은 값은 사실상 렌즈 초점거리 하나뿐이다.
+  아래 LENS_FOCAL_MM 주석이 그것을 어떻게 정했는지 적는다.
 ========================================================================
 """
 import numpy as np
 
 # =====================================================================
-# 하드웨어 사양 (PDF 2.2)
+# 하드웨어 사양 (PDF 2.2) — 표에 적힌 값
 # =====================================================================
-LENS_FOCAL_MM = 12.0        # spec  렌즈 12mm F2.0
-PIXEL_PITCH_UM = 3.45       # spec  Sony IMX264, 3.45µm
+PIXEL_PITCH_UM = 3.45       # spec  "픽셀 ≥3.45µm" 의 하한 = Sony IMX264
 IMAGE_W = 2448              # spec  2448 × 2048 (5MP)
 IMAGE_H = 2048              # spec
-BASELINE_M = 0.150          # design 카메라–레이저 광축 150mm
+BASELINE_M = 0.150          # spec  카메라–레이저 광축 150mm
+LENS_FNUMBER = 2.0          # spec  "저왜곡 F2.0급"
+FOCUS_DISTANCE_M = 1.2      # spec  "초점 ~1.2m 고정 잠금"
+LASER_WAVELENGTH_NM = 520   # spec  녹색 LD
+LASER_POWER_MW = (30, 49)   # spec  출력 30~49mW
 
-# DOE 격자
-N_VERTICAL = 21             # design 수직선 수
-N_HORIZONTAL = 21           # design 수평선 수
+# DOE 격자 — PDF 2.2 "수직 20 + 수평 20 (400 교점)"
+N_VERTICAL = 20             # spec
+N_HORIZONTAL = 20           # spec
 
-# 측정 거리 (PDF 1.1 권장 1~1.5m). 격자가 이 구간 내내 센서 안에 들어와야 한다.
+# DOE 발산각 — PDF 2.2 "120cm 에서 936×936mm" 에서 곧바로 나온다.
+#   FOV = 2·atan(468 / 1200) = 42.61°
+# 사양표에 각도로 적혀 있지는 않지만 다른 해석의 여지가 없으므로 spec 이다.
+FOV_DEG = float(np.degrees(2 * np.arctan(468.0 / 1200.0)))   # 42.612
+
+# 측정 거리 (PDF 1.1 "권장 1~1.5m")
 WORK_Z_MIN_M = 1.0          # spec
 WORK_Z_MAX_M = 1.5          # spec
 EDGE_MARGIN_PX = 50.0       # design 센서 가장자리 여유
 
-# 레이저 축 수렴각 — 격자를 센서 안에 담기 위한 설계값.
+# 정확도 목표 (PDF 1.1)
+TARGET_SIGMA_MM = 2.0       # spec  평활도 ±2mm
+TARGET_ANGLE_DEG = 0.5      # spec  수직·수평도 ±0.5°
+
+# ---------------------------------------------------------------------
+# 렌즈 초점거리 — PDF 가 값을 주지 않은 유일한 광학 상수
+# ---------------------------------------------------------------------
+# PDF 는 "저왜곡 F2.0급, 초점 ~1.2m 고정 잠금" 이라고만 쓴다. 초점거리는
+# 나머지 사양이 사실상 하나로 몰아준다.
 #
+#   (1) 격자를 전부 담을 것
+#       DOE 는 42.61° 로 고정되어 있다. 센서(8.446×7.066mm)에 이 각도를
+#       담으려면 세로 쪽이 먼저 막힌다.
+#           f ≤ (H/2 − margin)·pitch / tan(21.31°) = 8.62mm
+#       계산해 보면 표준 초점거리 중 6mm·8mm 만 통과하고 10mm 부터는
+#       수평·수직 모두 벗어난다. 즉 8mm 가 상한이자 최선이다.
+#
+#   (2) 초점 1.2m 고정으로 1.0~1.5m 를 다 볼 것
+#       고정 초점이므로 피사계심도가 작업거리를 덮어야 선이 흐려지지
+#       않는다. 착란원을 2px(6.9µm)로 두면
+#           8mm  F2.0 → 0.95 ~ 1.61m   작업거리 1.0~1.5m 를 덮는다
+#           12mm F2.0 → 1.08 ~ 1.35m   양 끝이 초점 밖으로 나간다
+#       PDF 가 "초점 ~1.2m 고정" 이라고 쓴 이상 12mm 는 성립하지 않는다.
+#
+#   (3) 목표 정밀도를 지킬 것
+#       σ_Z = σ_u·Z²/(f·b) 는 1.5m 에서 1.29mm 로 목표 ±2mm 안이다.
+#
+# 세 조건을 동시에 만족하는 표준 초점거리는 8mm 뿐이다. 2/3″ 커버·저왜곡·
+# F2.0급 8mm 렌즈는 머신비전에서 흔한 규격이다.
+LENS_FOCAL_MM = 8.0         # design (PDF 사양 (1)(2)(3) 에서 유도)
+
+# ---------------------------------------------------------------------
+# 레이저 축 수렴각 — 격자를 센서 안에 담기 위한 기구 설계값
+# ---------------------------------------------------------------------
 # 격자의 이미지상 위치는  u = f·tan(α) − f·b/Z + c_x  이다. 기선 b 때문에
-# 격자 전체가 거리에 따라 왼쪽으로 밀리며, 그 양 f·b/Z 는 1.0m 에서
-# 522px(센서 폭의 21%)에 이른다. 레이저 축을 카메라와 평행하게 두면
-# 이 이동량만큼 센서 한쪽이 통째로 낭비되어, 21선을 담을 수 있는 발산각이
-# 21.24°(1.2m 투사 450mm)로 줄어든다.
+# 격자 전체가 거리에 따라 왼쪽으로 밀리며, 그 양은 1.0m 에서 348px 이다.
+# 레이저 축을 카메라와 평행하게 두면 이 이동량만큼 센서 한쪽이 통째로
+# 낭비되어 42.61° 격자가 근거리에서 왼쪽으로 잘린다.
 #
-# 레이저를 카메라 쪽으로 조금 기울이면 격자가 작업거리에서 화면 중앙에
-# 오므로 양쪽을 고르게 쓸 수 있다. 삼각측량 기하는 그대로이고 발사각의
-# 기준축만 바뀌므로, α_i 에 이 각을 더해 쓰면 된다.
-#
-# 참고: PDF 2.2 의 "120cm 에서 936x936mm" 는 발산각 42.61° 에 해당하는데,
-# 12mm 렌즈의 HFOV 38.77° 보다 넓어 그대로는 담기지 않는다. 936mm 를
-# 유지하려면 렌즈를 10.4mm 이하로 낮춰야 한다.
-LASER_TILT_DEG = 5.1        # design 수렴각 (카메라 쪽으로)
-FOV_DEG = 31.0              # design 21선이 1.0~1.5m 내내 센서 안에 드는 최대값
+# 레이저를 카메라 쪽으로 δ 만큼 기울이면 격자가 작업거리 한가운데에서
+# 화면 중앙에 온다. 삼각측량 기하는 그대로이고 발사각의 기준축만 바뀌므로
+# α_i 에 δ 를 더해 쓰면 된다. 아래 값은 1.0m·1.5m 양 끝에서 가장자리
+# 여유가 최대가 되도록 0.01° 간격으로 찾은 값이다 (find_best_tilt()).
+LASER_TILT_DEG = 6.18       # design 수렴각 (카메라 쪽으로)
 
 # 선검출 정밀도 (불확실도 산정용)
 SIGMA_U_PX = 0.2            # assumed 서브픽셀 반복성. 실장비 측정 필요
-TARGET_SIGMA_MM = 2.0       # spec  평활도 목표 정밀도 (PDF 1.1)
 
 
 # =====================================================================
@@ -85,7 +133,12 @@ def projection_mm_at(z_m, fov_deg=None):
     return 2.0 * z_m * 1000.0 * np.tan(fov / 2.0)
 
 
-F_PX = focal_px()                      # 3478.3 px  (12mm / 3.45µm)
+F_PX = focal_px()                      # 2318.8 px  (8mm / 3.45µm)
+
+# 센서 물리 크기 — Isaac Sim 카메라의 aperture 에 그대로 들어간다.
+SENSOR_W_MM = IMAGE_W * PIXEL_PITCH_UM / 1000.0     # 8.4456 mm
+SENSOR_H_MM = IMAGE_H * PIXEL_PITCH_UM / 1000.0     # 7.0656 mm
+SENSOR_DIAG_MM = float(np.hypot(SENSOR_W_MM, SENSOR_H_MM))   # 11.01mm ≈ 2/3″
 CX_PX = IMAGE_W / 2.0                  # assumed 센서 정중앙. 캘리브레이션 필요
 CY_PX = IMAGE_H / 2.0                  # assumed 동일
 
@@ -105,7 +158,31 @@ GRID_PARAMS = {
     "samples_per_line": 250,
 }
 
-def make_line_angles(n_v=None, n_h=None, fov_deg=None, laser_tilt_deg=None):
+# DOE 발사각 분포 모델
+#   "equal_sine"  회절격자의 실제 거동. m 차 회절광은 sin α_m = m·λ/d 이므로
+#                 발사각은 사인 등간격이다. 평면 벽에 맺힌 격자는 가장자리로
+#                 갈수록 간격이 벌어진다.
+#   "equal_angle" 각도 등간격. 이전 버전이 쓰던 근사.
+# 두 모델의 바깥 포락선(±21.31°)은 같고 안쪽 배치만 다르다. 42.61° 에서
+# 두 모델의 격자선 위치 차이는 최대 1.6° (1.2m 에서 약 34mm) 로, 예측 위치를
+# 벗어난 선을 놓칠 만큼 크다. 출고 시에는 실측 α_i 가 이 모델을 대체한다.
+DOE_ANGLE_MODEL = "equal_sine"
+
+
+def _fan_angles(n, fov_deg, model=None):
+    """DOE 가 만드는 n 개 광선의 발사각 [rad]. 바깥 두 선이 ±fov/2 이다."""
+    model = DOE_ANGLE_MODEL if model is None else model
+    half = np.radians(fov_deg) / 2.0
+    t = np.linspace(-1.0, 1.0, n)
+    if model == "equal_sine":
+        return np.arcsin(np.sin(half) * t)
+    if model == "equal_angle":
+        return half * t
+    raise ValueError(f"알 수 없는 DOE 모델: {model}")
+
+
+def make_line_angles(n_v=None, n_h=None, fov_deg=None, laser_tilt_deg=None,
+                     model=None):
     """
     V선·H선의 발사각을 만든다. 카메라 좌표계 기준이다.
 
@@ -115,19 +192,19 @@ def make_line_angles(n_v=None, n_h=None, fov_deg=None, laser_tilt_deg=None):
 
     한계 — β 의 결합
       같은 회전에서 tanβ 는 1/(cosδ − sinδ·tanα₀) 배로 살짝 늘어난다.
-      즉 실제 격자는 미세한 사다리꼴이며, 발산각 31°·δ=5.1° 에서 가장자리
-      기준 약 ±2.5% 다. 깊이 Z 는 α 와 u 로만 정해지므로 영향이 없고,
-      H선 예측 위치에만 최대 24px 반영된다. 실장비에서는 캘리브레이션이
+      즉 실제 격자는 미세한 사다리꼴이며, 발산각 42.61°·δ=6.18° 에서
+      가장자리 기준 약 ±4% 다. 깊이 Z 는 α 와 u 로만 정해지므로 영향이
+      없고, H선 예측 위치에만 반영된다. 실장비에서는 캘리브레이션이
       이 결합을 그대로 측정해 담는다.
     """
     n_v = N_VERTICAL if n_v is None else n_v
     n_h = N_HORIZONTAL if n_h is None else n_h
-    fov = np.radians(FOV_DEG if fov_deg is None else fov_deg)
+    fov = FOV_DEG if fov_deg is None else fov_deg
     tilt = np.radians(LASER_TILT_DEG if laser_tilt_deg is None else laser_tilt_deg)
     a = {}
-    for i, ang in enumerate(np.linspace(-fov / 2, fov / 2, n_v) + tilt):
+    for i, ang in enumerate(_fan_angles(n_v, fov, model) + tilt):
         a[f"V{i}"] = {"fixed": "alpha", "angle_rad": float(ang)}
-    for j, ang in enumerate(np.linspace(-fov / 2, fov / 2, n_h)):
+    for j, ang in enumerate(_fan_angles(n_h, fov, model)):
         a[f"H{j}"] = {"fixed": "beta", "angle_rad": float(ang)}
     return a
 
@@ -147,13 +224,14 @@ def predicted_u(alpha_rad, z_m, camera_params=None):
 
 # 값의 출처 등급 — 문서·보고서가 이 표를 그대로 쓴다.
 PROVENANCE = {
-    "f_px":   ("spec",    "렌즈 12mm ÷ 화소 3.45µm 에서 유도"),
-    "b_m":    ("design",  "용역서 고정. 조립 후 실측 필요"),
+    "f_px":   ("design",  "PDF 에 초점거리 없음. 8mm = 격자수용·심도·정밀도에서 유도"),
+    "b_m":    ("spec",    "PDF 2.2 광축 150mm. 조립 후 실측 필요"),
     "cx_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
     "cy_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
-    "fov_deg": ("design", "21선이 1.0~1.5m 내내 센서 안에 드는 최대값"),
-    "tilt":    ("design", "레이저 축 수렴각. 시차 이동량을 상쇄한다"),
-    "alpha_i": ("assumed", "발산각을 등각도 분할. DOE 실측값으로 대체 필요"),
+    "fov_deg": ("spec",   "PDF 2.2 120cm 에서 936mm = 42.61°"),
+    "n_lines": ("spec",   "PDF 2.2 수직20 + 수평20 = 400 교점"),
+    "tilt":    ("design", "레이저 축 수렴각. 기선 시차 이동량을 상쇄한다"),
+    "alpha_i": ("assumed", "회절 사인등간격 모델. DOE 실측 α_i 로 대체 필요"),
     "beta_j":  ("assumed", "동일"),
     "R_t":     ("assumed", "R=I, t=(b,0,0). 스테레오 캘리브레이션 필요"),
     "R_ic":    ("assumed", "단위행렬. IMU–카메라 캘리브레이션 필요"),
@@ -251,6 +329,83 @@ def sigma_z_mm(z_m, camera_params=None, sigma_u_px=SIGMA_U_PX):
     return sigma_u_px * z_m ** 2 / (cp["f_px"] * cp["b_m"]) * 1000.0
 
 
+def depth_of_field(focal_mm=None, f_number=None, focus_m=None, coc_px=2.0):
+    """
+    고정 초점 렌즈가 선명하게 담는 거리 범위 [m].
+
+    PDF 는 "초점 ~1.2m 고정 잠금" 이라 조절 장치가 없다. 따라서 작업거리
+    1.0~1.5m 가 통째로 심도 안에 들어와야 하며, 그러지 않으면 양 끝에서
+    레이저선이 번져 서브픽셀 중심이 흔들린다. 착란원은 화소 몇 개인지로
+    준다 (2px = 6.9µm).
+
+        H = f²/(N·c) + f
+        near = H·s/(H + (s−f)),   far = H·s/(H − (s−f))
+    """
+    f = LENS_FOCAL_MM if focal_mm is None else focal_mm
+    N = LENS_FNUMBER if f_number is None else f_number
+    s = (FOCUS_DISTANCE_M if focus_m is None else focus_m) * 1000.0
+    c = coc_px * PIXEL_PITCH_UM / 1000.0
+    H = f * f / (N * c) + f
+    near = H * s / (H + (s - f))
+    far = H * s / (H - (s - f)) if H > (s - f) else float("inf")
+    return near / 1000.0, far / 1000.0
+
+
+def find_best_tilt(focal_mm=None, fov_deg=None, n_v=None, n_h=None,
+                   z_min=None, z_max=None, step_deg=0.01, max_deg=15.0):
+    """
+    가장자리 여유가 최대가 되는 레이저 수렴각을 찾는다.
+
+    작업거리 양 끝에서 좌우 네 여유(근거리 좌·우, 원거리 좌·우) 중 최소값을
+    최대로 만드는 δ 를 고른다. LASER_TILT_DEG 는 이 함수가 낸 값이다.
+    """
+    cp = dict(CAMERA_PARAMS)
+    if focal_mm is not None:
+        cp["f_px"] = focal_px(focal_mm)
+    f, b, cx = cp["f_px"], cp["b_m"], cp["cx_px"]
+    W = cp["resolution"][0]
+    z0 = WORK_Z_MIN_M if z_min is None else z_min
+    z1 = WORK_Z_MAX_M if z_max is None else z_max
+    a0 = _fan_angles(N_VERTICAL if n_v is None else n_v,
+                     FOV_DEG if fov_deg is None else fov_deg)
+    best = (0.0, -1e9)
+    for d in np.arange(0.0, max_deg, step_deg):
+        al = a0 + np.radians(d)
+        margins = []
+        for z in (z0, z1):
+            u = f * np.tan(al) - f * b / z + cx
+            margins += [u.min(), W - u.max()]
+        m = min(margins)
+        if m > best[1]:
+            best = (float(d), float(m))
+    return {"tilt_deg": round(best[0], 2), "margin_px": round(best[1], 1)}
+
+
+def isaac_camera_params():
+    """
+    Isaac Sim(USD) 카메라에 넣을 물리 파라미터.
+
+    USD 카메라는 초점거리와 aperture 를 mm 로 받고 화각을 그것으로 정한다.
+    센서 실물 크기를 그대로 넣으면 f_px 가 정확히 재현되고, 렌더된 이미지의
+    픽셀 좌표가 삼각측량식의 u, v 와 같은 뜻을 갖는다.
+
+        f_px = focal_length · resolution_x / horizontal_aperture
+
+    aperture 를 36mm 같은 임의값으로 두고 초점거리를 역산해도 f_px 는
+    같지만, 그러면 f-stop·초점거리가 실물과 달라져 심도·보케를 켰을 때
+    사양과 다른 이미지가 나온다.
+    """
+    return {
+        "focal_length_mm":      LENS_FOCAL_MM,
+        "horizontal_aperture_mm": round(SENSOR_W_MM, 4),
+        "vertical_aperture_mm":   round(SENSOR_H_MM, 4),
+        "f_stop":               LENS_FNUMBER,
+        "focus_distance_m":     FOCUS_DISTANCE_M,
+        "resolution":           [IMAGE_W, IMAGE_H],
+        "clipping_range_m":     [0.01, 50.0],
+    }
+
+
 def fov_mm_at(z_m, camera_params=None):
     """거리 z_m 에서 카메라가 담는 시야 (가로, 세로) [mm]"""
     cp = camera_params or CAMERA_PARAMS
@@ -261,15 +416,16 @@ def fov_mm_at(z_m, camera_params=None):
 def summary():
     """현재 캘리브레이션 값과 출처를 표로 출력한다."""
     lines = ["캘리브레이션 데이터 (B) — 출고 시 1회 측정",
-             "-" * 72]
+             "-" * 78]
     rows = [
         ("f_px",    f"{CAMERA_PARAMS['f_px']} px", "f",       "f_px"),
         ("주점",     f"{CX_PX:.1f}, {CY_PX:.1f} px", "c_x,c_y", "cx_px"),
         ("기선",     f"{BASELINE_M} m",            "b",       "b_m"),
-        ("DOE 발산각", f"{GRID_PARAMS['fov_deg']}°", "—",      "fov_deg"),
+        ("DOE 발산각", f"{GRID_PARAMS['fov_deg']:.2f}°", "—",  "fov_deg"),
+        ("격자선 수",  f"수직{N_VERTICAL} + 수평{N_HORIZONTAL}", "—", "n_lines"),
         ("레이저 수렴각", f"{LASER_TILT_DEG}°",         "δ",       "tilt"),
-        ("V선 발사각", f"등각도 {N_VERTICAL}분할",     "α_i",     "alpha_i"),
-        ("H선 발사각", f"등각도 {N_HORIZONTAL}분할",   "β_j",     "beta_j"),
+        ("V선 발사각", f"{DOE_ANGLE_MODEL} {N_VERTICAL}분할", "α_i", "alpha_i"),
+        ("H선 발사각", f"{DOE_ANGLE_MODEL} {N_HORIZONTAL}분할", "β_j", "beta_j"),
         ("카메라–레이저 자세", "R=I, t=(b,0,0)",     "R, t",    "R_t"),
         ("IMU–카메라 자세", "단위행렬",              "R_ic",    "R_ic"),
         ("가속도계 bias", "미구현",                  "b_a",     "b_a"),
@@ -277,30 +433,68 @@ def summary():
     ]
     for name, val, sym, key in rows:
         grade, note = PROVENANCE[key]
-        lines.append(f"  {name:<18} {sym:<8} {val:<18} [{grade:<7}] {note}")
+        lines.append(f"  {name:<18} {sym:<8} {val:<22} [{grade:<7}] {note}")
     return "\n".join(lines)
 
 
 if __name__ == "__main__":
     print(summary())
     print()
-    print("유도값")
-    print("-" * 72)
-    print(f"  f_px      = {LENS_FOCAL_MM}mm / {PIXEL_PITCH_UM}\u00b5m = {F_PX:.1f} px")
-    print(f"  카메라 HFOV {2*np.degrees(np.arctan(CX_PX/F_PX)):.2f}°  "
-          f"VFOV {2*np.degrees(np.arctan(CY_PX/F_PX)):.2f}°")
-    print(f"  격자 발산각 {FOV_DEG}°  수렴각 {LASER_TILT_DEG}°")
+    print("PDF 사양표에서 그대로 가져온 값")
+    print("-" * 78)
+    print(f"  해상도        {IMAGE_W}×{IMAGE_H} (5MP), 글로벌 셔터")
+    print(f"  화소 피치      {PIXEL_PITCH_UM}µm  → 센서 "
+          f"{SENSOR_W_MM:.3f}×{SENSOR_H_MM:.3f}mm, 대각 {SENSOR_DIAG_MM:.2f}mm (2/3\u2033)")
+    print(f"  렌즈          F{LENS_FNUMBER}, 초점 {FOCUS_DISTANCE_M}m 고정 "
+          f"(초점거리는 PDF 에 없음)")
+    print(f"  레이저        {LASER_WAVELENGTH_NM}nm, "
+          f"{LASER_POWER_MW[0]}~{LASER_POWER_MW[1]}mW, DOE 단일소자")
+    print(f"  격자          수직{N_VERTICAL} + 수평{N_HORIZONTAL} = "
+          f"{N_VERTICAL*N_HORIZONTAL}교점, 120cm 에서 "
+          f"{projection_mm_at(1.2):.0f}mm")
+    print(f"  기선          {BASELINE_M*1000:.0f}mm")
+    print(f"  작업거리       {WORK_Z_MIN_M}~{WORK_Z_MAX_M}m, "
+          f"목표 평활도 ±{TARGET_SIGMA_MM}mm / 각도 ±{TARGET_ANGLE_DEG}°")
+    print()
+    print("PDF 에 없어 이 코드가 정한 값과 그 근거")
+    print("-" * 78)
+    print(f"  렌즈 초점거리 {LENS_FOCAL_MM}mm")
+    print(f"    {'초점거리':<8}{'격자 수용':<12}{'심도(초점1.2m)':<20}{'σ_Z@1.5m':<10}판정")
+    for fmm in (6.0, 8.0, 10.0, 12.0, 16.0):
+        f = focal_px(fmm)
+        cp = {**CAMERA_PARAMS, "f_px": f}
+        r = check_consistency(cp, verbose=False)
+        n, fr = depth_of_field(fmm)
+        cover = (n <= WORK_Z_MIN_M and fr >= WORK_Z_MAX_M)
+        sz = sigma_z_mm(WORK_Z_MAX_M, cp)
+        ok = r["fits"] and cover and sz <= TARGET_SIGMA_MM
+        print(f"    {fmm:<8.0f}{'들어옴' if r['fits'] else '벗어남':<12}"
+              f"{f'{n:.2f} ~ {fr:.2f} m' + ('' if cover else ' (부족)'):<20}"
+              f"{f'{sz:.2f}mm':<10}{'채택' if ok else '탈락'}")
+    bt = find_best_tilt()
+    print(f"  레이저 수렴각 {LASER_TILT_DEG}°  "
+          f"(탐색 결과 {bt['tilt_deg']}°, 그때 가장자리 여유 {bt['margin_px']}px)")
+    print(f"  가장자리 마진 {EDGE_MARGIN_PX:.0f}px")
+    print()
+    print("Isaac Sim 카메라 설정값")
+    print("-" * 78)
+    for k, v in isaac_camera_params().items():
+        print(f"  {k:<24}{v}")
+    print(f"  → f_px = {LENS_FOCAL_MM} × {IMAGE_W} / {SENSOR_W_MM:.4f} = {F_PX:.1f}")
     print()
     print("거리별 시야 · 격자 투사폭 · 깊이 노이즈 (σ_u = 0.2px, b = 150mm)")
-    print("-" * 72)
-    print(f"  {'거리':<7}{'카메라 시야':<22}{'격자 투사폭':<13}{'mm/px':<9}{'σ_Z':<8}")
+    print("-" * 78)
+    print(f"  {'거리':<7}{'카메라 시야':<22}{'격자 투사폭':<13}"
+          f"{'mm/px':<9}{'격자 피치':<11}{'σ_Z':<8}")
     for z in (0.5, 1.0, 1.2, 1.5, 2.0, 3.0):
         w, h = fov_mm_at(z)
+        pitch = projection_mm_at(z) / (N_VERTICAL - 1)
         print(f"  {z:<7.1f}{f'{w:.0f} × {h:.0f} mm':<22}"
-              f"{f'{projection_mm_at(z):.0f} mm':<13}{w/IMAGE_W:<9.4f}{sigma_z_mm(z):<8.2f}")
+              f"{f'{projection_mm_at(z):.0f} mm':<13}{w/IMAGE_W:<9.4f}"
+              f"{f'{pitch:.1f} mm':<11}{sigma_z_mm(z):<8.2f}")
     print()
     print("정합성 검사 — 격자가 작업거리 전 구간에서 센서 안에 드는가")
-    print("-" * 72)
+    print("-" * 78)
     r = check_consistency()
     W, H = IMAGE_W, IMAGE_H
     m = EDGE_MARGIN_PX
@@ -314,3 +508,6 @@ if __name__ == "__main__":
     print(f"  판정: {'격자 전부 센서 안' if r['fits'] else '벗어남'}")
     print(f"  이 설계로 쓸 수 있는 거리: "
           f"{r['usable_z_m'][0]} ~ {r['usable_z_m'][1]} m")
+    n, fr = depth_of_field()
+    print(f"  피사계심도 {n:.2f} ~ {fr:.2f} m "
+          f"({'작업거리 포함' if n <= WORK_Z_MIN_M and fr >= WORK_Z_MAX_M else '작업거리 미포함'})")
