@@ -330,45 +330,15 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
     n_linear_rescued = 0
     for reg in regions:
         pts_all = table["xyz"][reg["idx"]]
-
-        # ── 선형 부재 우선 정제 ──
-        # 동바리·철근처럼 가는 부재는 마스크가 몇 px 만 밖으로 밀려도 뒤쪽
-        # 벽면 점이 딸려 들어오고, 부재가 가늘어 그 비중이 크다. 그러면 PCA
-        # 형상 판별이 선형에서 평면으로 뒤집히고, "면↔선형은 기하 우선"
-        # 규칙이 올바른 의미 라벨을 버려 부재가 통째로 사라진다
-        # (실측: 마스크 +8px 팽창에서 동바리 288점에 벽 33점이 섞여 소실).
-        # → 의미 라벨이 선형이면 먼저 robust 축 적합으로 오염을 걷어내고,
-        #   성공하면 선형 해석을 유지한다.
-        rescued = False
-        if reg["class"] in _EQ5.LINEAR_VERTICAL_CLASSES:
-            ax0 = _EQ2.fit_axis_ransac(pts_all)
-            cand = pts_all[ax0["inlier_mask"]] if ax0["is_valid"] else None
-            if cand is not None and len(cand) >= min_region_points:
-                # 정제 결과가 **실제로 1D 부재인지** 확인해야 한다.
-                # 축 적합은 평면을 얇게 저민 조각에도 성공한다. 바닥 조각에
-                # 축을 맞추면 축이 면 안에 누워 거의 수평이 되고, 수직도가
-                # 89° 로 나온다(실측: 라벨 오분류 시 동바리 오차 88.79°).
-                # 원통은 3번째 주축에도 두께가 남지만 판 조각은 납작하므로
-                # geometric_evidence 의 선형 판정으로 가려낼 수 있다.
-                ev_c = _EQ5.geometric_evidence(cand, g_hat)
-                if ev_c["shape"] == "linear_vertical":
-                    if ax0.get("inlier_frac", 1.0) < 0.999:
-                        n_linear_rescued += 1
-                    pts_all = cand
-                    rescued = True
-
         ev0 = _EQ5.geometric_evidence(pts_all, g_hat)
-        if rescued:
-            fu0 = {"semantic_class": reg["class"], "geom_shape": ev0["shape"],
-                   "geom_confidence": round(float(ev0.get("confidence", 0.0)), 3),
-                   "final_class": reg["class"], "source": "semantic",
-                   "agreed": ev0["shape"] == "linear_vertical",
-                   "note": ("선형 부재 — robust 축 적합으로 오염점 제거 후 "
-                            "의미 라벨 유지")}
-        else:
-            fu0 = _EQ5.fuse_label(reg["class"], ev0)
+        fu0 = _EQ5.fuse_label(reg["class"], ev0)
 
-        # 병합된 영역이면 되쪼갠다 (세그멘테이션이 두 부재를 한 라벨로 묶은 경우)
+        # ── 1) 병합된 영역이면 먼저 되쪼갠다 ──
+        # 세그멘테이션이 두 부재를 한 라벨로 묶었을 수 있다. 이 단계를
+        # 선형 정제보다 **먼저** 해야 한다. 순서를 바꾸면, 라벨이 선형인
+        # 영역에서 축 바깥 점이 통째로 버려져 같이 묶여 있던 다른 부재가
+        # 재분할에 도달하지 못한다(실측: 바닥 471점이 동바리 라벨에 묶이자
+        # 축 정제가 이를 버려 바닥 검측이 통째로 사라짐).
         parts = ([(fu0["final_class"], np.arange(len(pts_all)))]
                  if not split_incoherent
                  else split_incoherent_region(pts_all, fu0["final_class"],
@@ -378,10 +348,42 @@ def inspect_image(lines_pixels, lines_xyz, camera_params, g_hat,
 
         for part_cls, sub_idx in parts:
             pts = pts_all[sub_idx]
-            ev = (ev0 if len(parts) == 1
-                  else _EQ5.geometric_evidence(pts, g_hat))
-            fu = (fu0 if len(parts) == 1
-                  else _EQ5.fuse_label(part_cls, ev))
+
+            # ── 2) 조각별 선형 부재 정제 ──
+            # 동바리·철근처럼 가는 부재는 마스크가 몇 px 만 밖으로 밀려도
+            # 뒤쪽 면의 점이 딸려 들어오고, 부재가 가늘어 그 비중이 크다.
+            # 그러면 형상 판별이 선형에서 평면으로 뒤집히고, "면↔선형은
+            # 기하 우선" 규칙이 올바른 의미 라벨을 버려 부재가 사라진다
+            # (실측: 마스크 +8px 팽창에서 동바리 288점에 벽 33점이 섞여 소실).
+            rescued = False
+            if part_cls in _EQ5.LINEAR_VERTICAL_CLASSES:
+                ax0 = _EQ2.fit_axis_ransac(pts)
+                cand = pts[ax0["inlier_mask"]] if ax0["is_valid"] else None
+                if cand is not None and len(cand) >= min_region_points:
+                    # 정제 결과가 **실제로 1D 부재인지** 확인해야 한다.
+                    # 축 적합은 평면을 얇게 저민 조각에도 성공한다. 바닥
+                    # 조각에 축을 맞추면 축이 면 안에 누워 수직도가 89° 로
+                    # 나온다(실측: 라벨 오분류 시 동바리 오차 88.79°).
+                    # 원통은 3번째 주축에도 두께가 남지만 판 조각은 납작해
+                    # geometric_evidence 의 선형 판정으로 가려낼 수 있다.
+                    if _EQ5.geometric_evidence(cand, g_hat)["shape"] == "linear_vertical":
+                        if ax0.get("inlier_frac", 1.0) < 0.999:
+                            n_linear_rescued += 1
+                        pts = cand
+                        rescued = True
+
+            ev = _EQ5.geometric_evidence(pts, g_hat)
+            if rescued:
+                fu = {"semantic_class": part_cls, "geom_shape": ev["shape"],
+                      "geom_confidence": round(float(ev.get("confidence", 0.0)), 3),
+                      "final_class": part_cls, "source": "semantic",
+                      "agreed": ev["shape"] == "linear_vertical",
+                      "note": ("선형 부재 — robust 축 적합으로 오염점 제거 후 "
+                               "의미 라벨 유지")}
+            elif len(parts) == 1:
+                fu = fu0
+            else:
+                fu = _EQ5.fuse_label(part_cls, ev)
             final_cls = fu["final_class"]
 
             r = measure_region(pts, final_cls, g_hat, camera_params,

@@ -172,6 +172,38 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
     deferred = []            # 평면으로 확정되지 않아 선형 단계로 넘길 점
     class_names, next_id = {}, 0
 
+    # ── 0. 선형 부재 선추출 ──
+    # 얇은 부재는 점이 적어 평면 단계에서 쉽게 흡수된다. 실제로 동바리
+    # 431점에 인접한 바닥 85점이 섞이자 덩어리 전체가 평면으로 판정되어
+    # 동바리가 사라졌다. 그래서 평면을 뽑기 전에 먼저 걷어낸다.
+    #
+    # 벽의 가느다란 조각을 잘못 집지 않도록 두 가지를 함께 요구한다.
+    #   · robust 축 적합이 유효하고 축 주변 점 비율이 충분할 것
+    #   · 그 점들이 실제로 1D 부재로 판별될 것 (판/원통 두께비 검사)
+    for grp in _spatial_groups(pts, cluster_eps_m, min_linear_points):
+        gidx = np.arange(N)[grp]
+        try:
+            # 혼합 덩어리에서 얇은 부재를 끄집어내는 것이 목적이므로
+            # inlier 비율 하한을 낮춘다. 실제로 동바리 471점이 바닥 491점과
+            # 한 덩어리를 이루면 비율이 0.49 로, 절반을 요구하면 놓친다.
+            # 대신 아래 형상 판별(판/원통 두께비)로 벽 조각을 걸러낸다.
+            ax = _EQ5._EQ2.fit_axis_ransac(pts[gidx], min_inlier_frac=0.15)
+        except Exception:
+            continue
+        if not ax["is_valid"]:
+            continue
+        sub = gidx[ax["inlier_mask"]]
+        if len(sub) < min_linear_points:
+            continue
+        if _EQ5.geometric_evidence(pts[sub], g_hat)["shape"] != "linear_vertical":
+            continue
+        labels[sub] = next_id
+        # 기하는 동바리/기둥/철근을 구분하지 못한다 → 가장 흔한 shoring
+        class_names[next_id] = "shoring"
+        next_id += 1
+    if next_id:
+        remaining = np.where(labels < 0)[0]
+
     # ── 1~2. 순차 RANSAC 평면 추출 ──
     for _ in range(max_planes):
         if len(remaining) < min_plane_points:
@@ -215,7 +247,7 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
         drop = np.concatenate(consumed)
         remaining = np.setdiff1d(remaining, drop, assume_unique=False)
 
-    # ── 3~4. 잔여 점 + 보류 점에서 선형 부재 ──
+    # ── 3~4. 잔여 점 + 보류 점에서 선형 부재 (선추출에서 놓친 것) ──
     leftover = (np.union1d(remaining, np.concatenate(deferred))
                 if deferred else remaining)
     for grp in _spatial_groups(pts[leftover], cluster_eps_m, min_linear_points):

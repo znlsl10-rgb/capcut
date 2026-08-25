@@ -304,7 +304,15 @@ def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
         fov_h = np.radians(camera_params.get("fov_h_deg", 42.61))
         alpha = -fov_h/2 + idx * fov_h / max(n_v - 1, 1)
 
-    u_pred = f * np.tan(alpha) + cx
+    # 기선 시차 보정 — 이 항이 없으면 예측이 통째로 어긋난다.
+    #   u = f·tan(α) − f·b/Z + c_x
+    # 두 번째 항은 카메라가 레이저에서 b 만큼 떨어져 있어 생기는 이동이며,
+    # f=3478, b=150mm, Z=1.2m 에서 435px 에 이른다. 추적 밴드는 20~50px
+    # 이므로 이 항을 빼면 밴드가 실제 선 근처에 놓이지도 않는다.
+    b = camera_params.get("b_m", 0.150)
+    z_mm = camera_params.get("standoff_z", 1200.0)
+    z_m = float(z_mm) / 1000.0 if z_mm and z_mm > 10 else float(z_mm or 1.2)
+    u_pred = f * np.tan(alpha) - f * b / max(z_m, 1e-3) + cx
     # 원근 보정: 거리와 카메라 틸트 없으면 V선은 이미지 전체에서 u가 일정
     return np.full(H_img, u_pred, dtype=float)
 

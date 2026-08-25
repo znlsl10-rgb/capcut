@@ -396,16 +396,30 @@ def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
         out["inlier_frac"] = 1.0
         return out
 
-    # inlier 로 축을 다시 세우고 한 번 더 걸러 안정화
-    for _ in range(2):
+    # inlier 로 축을 다시 세우고, 반경을 부재 실제 굵기에 맞춰 조인다.
+    #
+    # radius_m 은 어떤 부재든 담기도록 넉넉히 잡은 초기값이다(60mm). 그대로
+    # 두면 부재 밑동에 닿은 바닥 점처럼 반경 안에 들어오는 이웃 면의 점이
+    # 함께 남아 축을 끌어당긴다(실측: 동바리 471점에 바닥 47점이 섞여
+    # 수직도가 1.2° → 2.37° 로 틀어짐).
+    # → 매 회차마다 inlier 의 반경 분포에서 부재 굵기를 다시 추정해
+    #   그 굵기에 맞는 좁은 반경으로 다시 고른다.
+    cur_r = radius_m
+    for _ in range(4):
         sub = pts[best_mask]
         c = sub.mean(axis=0)
         _, _, vt = np.linalg.svd(sub - c, full_matrices=False)
         d = vt[0] / np.linalg.norm(vt[0])
         rel = pts - c
         radial = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
-        new_mask = radial <= radius_m
+        # 부재 굵기 추정 → 여유 30% 를 둔 반경. 초기값보다 넓히지는 않는다.
+        r_est = float(np.percentile(radial[best_mask], 90))
+        cur_r = min(cur_r, max(r_est * 1.3, 0.005))
+        new_mask = radial <= cur_r
         if int(new_mask.sum()) < min_points:
+            break
+        if bool((new_mask == best_mask).all()):
+            best_mask = new_mask
             break
         best_mask = new_mask
 

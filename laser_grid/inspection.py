@@ -479,13 +479,10 @@ def _set_camera_xform(stage, R, cam_pos):
     xf=UsdGeom.Xformable(cp); xf.ClearXformOpOrder(); xf.AddTransformOp().Set(M44)
 
 
-def _make_line_angles(n_v,n_h,fov_deg):
-    fov=np.radians(fov_deg)
-    va=np.linspace(-fov/2,fov/2,n_v); ha=np.linspace(-fov/2,fov/2,n_h)
-    a={}
-    for i,ang in enumerate(va): a[f"V{i}"]={"fixed":"alpha","angle_rad":float(ang)}
-    for j,ang in enumerate(ha): a[f"H{j}"]={"fixed":"beta", "angle_rad":float(ang)}
-    return a
+def _make_line_angles(n_v, n_h, fov_deg):
+    """발사각 생성은 calibration 이 단일 출처다 (레이저 수렴각 포함)."""
+    return CALIB.make_line_angles(n_v, n_h, fov_deg,
+                                  GRID_PARAMS.get("laser_tilt_deg", 0.0))
 
 
 # =====================================================================

@@ -35,8 +35,29 @@ BASELINE_M = 0.150          # design 카메라–레이저 광축 150mm
 # DOE 격자
 N_VERTICAL = 21             # design 수직선 수
 N_HORIZONTAL = 21           # design 수평선 수
-DOE_PROJECTION_MM = 936.0   # spec  120cm 에서 약 936×936mm
-DOE_REFERENCE_Z_MM = 1200.0 # spec  위 투사폭의 기준 거리
+
+# 측정 거리 (PDF 1.1 권장 1~1.5m). 격자가 이 구간 내내 센서 안에 들어와야 한다.
+WORK_Z_MIN_M = 1.0          # spec
+WORK_Z_MAX_M = 1.5          # spec
+EDGE_MARGIN_PX = 50.0       # design 센서 가장자리 여유
+
+# 레이저 축 수렴각 — 격자를 센서 안에 담기 위한 설계값.
+#
+# 격자의 이미지상 위치는  u = f·tan(α) − f·b/Z + c_x  이다. 기선 b 때문에
+# 격자 전체가 거리에 따라 왼쪽으로 밀리며, 그 양 f·b/Z 는 1.0m 에서
+# 522px(센서 폭의 21%)에 이른다. 레이저 축을 카메라와 평행하게 두면
+# 이 이동량만큼 센서 한쪽이 통째로 낭비되어, 21선을 담을 수 있는 발산각이
+# 21.24°(1.2m 투사 450mm)로 줄어든다.
+#
+# 레이저를 카메라 쪽으로 조금 기울이면 격자가 작업거리에서 화면 중앙에
+# 오므로 양쪽을 고르게 쓸 수 있다. 삼각측량 기하는 그대로이고 발사각의
+# 기준축만 바뀌므로, α_i 에 이 각을 더해 쓰면 된다.
+#
+# 참고: PDF 2.2 의 "120cm 에서 936x936mm" 는 발산각 42.61° 에 해당하는데,
+# 12mm 렌즈의 HFOV 38.77° 보다 넓어 그대로는 담기지 않는다. 936mm 를
+# 유지하려면 렌즈를 10.4mm 이하로 낮춰야 한다.
+LASER_TILT_DEG = 5.1        # design 수렴각 (카메라 쪽으로)
+FOV_DEG = 31.0              # design 21선이 1.0~1.5m 내내 센서 안에 드는 최대값
 
 # 선검출 정밀도 (불확실도 산정용)
 SIGMA_U_PX = 0.2            # assumed 서브픽셀 반복성. 실장비 측정 필요
@@ -58,19 +79,15 @@ def focal_px(focal_mm=LENS_FOCAL_MM, pitch_um=PIXEL_PITCH_UM):
     return focal_mm / (pitch_um / 1000.0)
 
 
-def doe_fov_deg(projection_mm=DOE_PROJECTION_MM, z_mm=DOE_REFERENCE_Z_MM):
-    """투사폭과 그 기준 거리에서 DOE 전체 발산각을 역산한다."""
-    return 2.0 * np.degrees(np.arctan((projection_mm / 2.0) / z_mm))
+def projection_mm_at(z_m, fov_deg=None):
+    """거리 z_m 에서 격자가 덮는 폭 [mm]"""
+    fov = np.radians(FOV_DEG if fov_deg is None else fov_deg)
+    return 2.0 * z_m * 1000.0 * np.tan(fov / 2.0)
 
 
 F_PX = focal_px()                      # 3478.3 px  (12mm / 3.45µm)
 CX_PX = IMAGE_W / 2.0                  # assumed 센서 정중앙. 캘리브레이션 필요
 CY_PX = IMAGE_H / 2.0                  # assumed 동일
-FOV_DEG = doe_fov_deg()                # 42.61°  (936mm @ 1.2m)
-
-# 12mm 렌즈로 21선을 전부 담으려면 필요한 발산각 (마진 50px 기준).
-# PDF 의 DOE 사양(42.61°)은 이보다 넓어 양 끝 선이 센서를 벗어난다.
-FOV_DEG_FIT_SENSOR = 2.0 * np.degrees(np.arctan((CX_PX - 50.0) / F_PX))
 
 CAMERA_PARAMS = {
     "f_px":  round(F_PX, 1),
@@ -83,9 +100,50 @@ CAMERA_PARAMS = {
 GRID_PARAMS = {
     "n_vertical":       N_VERTICAL,
     "n_horizontal":     N_HORIZONTAL,
-    "fov_deg":          round(FOV_DEG, 2),
+    "fov_deg":          FOV_DEG,
+    "laser_tilt_deg":   LASER_TILT_DEG,
     "samples_per_line": 250,
 }
+
+def make_line_angles(n_v=None, n_h=None, fov_deg=None, laser_tilt_deg=None):
+    """
+    V선·H선의 발사각을 만든다. 카메라 좌표계 기준이다.
+
+    수렴각 δ 는 α 에 그대로 더한다. 레이저를 Y축으로 δ 만큼 돌리면 광선
+    (tanα₀, tanβ₀, 1) 의 수평 성분이 정확히 tan(α₀+δ) 가 되기 때문이다
+    (탄젠트 덧셈정리).
+
+    한계 — β 의 결합
+      같은 회전에서 tanβ 는 1/(cosδ − sinδ·tanα₀) 배로 살짝 늘어난다.
+      즉 실제 격자는 미세한 사다리꼴이며, 발산각 31°·δ=5.1° 에서 가장자리
+      기준 약 ±2.5% 다. 깊이 Z 는 α 와 u 로만 정해지므로 영향이 없고,
+      H선 예측 위치에만 최대 24px 반영된다. 실장비에서는 캘리브레이션이
+      이 결합을 그대로 측정해 담는다.
+    """
+    n_v = N_VERTICAL if n_v is None else n_v
+    n_h = N_HORIZONTAL if n_h is None else n_h
+    fov = np.radians(FOV_DEG if fov_deg is None else fov_deg)
+    tilt = np.radians(LASER_TILT_DEG if laser_tilt_deg is None else laser_tilt_deg)
+    a = {}
+    for i, ang in enumerate(np.linspace(-fov / 2, fov / 2, n_v) + tilt):
+        a[f"V{i}"] = {"fixed": "alpha", "angle_rad": float(ang)}
+    for j, ang in enumerate(np.linspace(-fov / 2, fov / 2, n_h)):
+        a[f"H{j}"] = {"fixed": "beta", "angle_rad": float(ang)}
+    return a
+
+
+def predicted_u(alpha_rad, z_m, camera_params=None):
+    """
+    발사각 α 의 V선이 거리 z_m 에서 이미지의 어디에 맺히는지.
+
+        u = f·tan(α) − f·b/Z + c_x
+
+    두 번째 항이 기선 때문에 생기는 시차 이동이다. 이 항을 빼먹으면
+    예측 위치가 1.2m 에서 435px 어긋나, 추적 밴드(20~50px) 밖으로 나간다.
+    """
+    cp = camera_params or CAMERA_PARAMS
+    return cp["f_px"] * np.tan(alpha_rad) - cp["f_px"] * cp["b_m"] / z_m + cp["cx_px"]
+
 
 # 값의 출처 등급 — 문서·보고서가 이 표를 그대로 쓴다.
 PROVENANCE = {
@@ -93,7 +151,8 @@ PROVENANCE = {
     "b_m":    ("design",  "용역서 고정. 조립 후 실측 필요"),
     "cx_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
     "cy_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
-    "fov_deg": ("spec",   "DOE 투사폭 936mm @1.2m 에서 역산"),
+    "fov_deg": ("design", "21선이 1.0~1.5m 내내 센서 안에 드는 최대값"),
+    "tilt":    ("design", "레이저 축 수렴각. 시차 이동량을 상쇄한다"),
     "alpha_i": ("assumed", "발산각을 등각도 분할. DOE 실측값으로 대체 필요"),
     "beta_j":  ("assumed", "동일"),
     "R_t":     ("assumed", "R=I, t=(b,0,0). 스테레오 캘리브레이션 필요"),
@@ -127,49 +186,62 @@ def scale_to_resolution(width_px, camera_params=None):
 # =====================================================================
 # 정합성 검사
 # =====================================================================
-def check_consistency(camera_params=None, grid_params=None, verbose=True):
+def check_consistency(camera_params=None, grid_params=None,
+                      z_min=None, z_max=None, margin_px=None, verbose=True):
     """
-    격자가 카메라 시야 안에 들어오는지 확인한다.
+    격자가 작업거리 전 구간에서 센서 안에 들어오는지 확인한다.
 
-    PDF 의 카메라 사양(12mm 렌즈)과 DOE 사양(936mm @1.2m)은 서로
-    맞지 않는다. 카메라 시야는 1.2m 에서 845mm 인데 DOE 는 936mm 를
-    투사하므로, 격자가 시야보다 약 10% 넓어 양 끝 선이 센서를 벗어난다.
-    설계에 되먹여야 할 사항이라 조용히 넘기지 않고 보고한다.
+    단순히 시야각만 비교해서는 안 된다. 격자의 이미지상 위치는 기선 때문에
+    거리에 따라 f·b/Z 만큼 좌우로 이동하며, 1.0m 에서 그 양이 센서 폭의
+    21% 에 이른다. 따라서 가장 가까운 거리와 가장 먼 거리 양쪽에서
+    확인해야 한다.
 
     Returns
     -------
-    dict — n_lines, n_inside, hfov_deg, fov_deg, u_range, fits
+    dict — fits, u_range_near, u_range_far, v_range, usable_z_m
     """
     cp = camera_params or CAMERA_PARAMS
     gp = grid_params or GRID_PARAMS
-    f, cx = cp["f_px"], cp["cx_px"]
-    W = cp["resolution"][0]
-    fov = np.radians(gp["fov_deg"])
-    n = gp["n_vertical"]
+    z0 = WORK_Z_MIN_M if z_min is None else z_min
+    z1 = WORK_Z_MAX_M if z_max is None else z_max
+    m = EDGE_MARGIN_PX if margin_px is None else margin_px
+    W, H = cp["resolution"]
+    f, b, cx, cy = cp["f_px"], cp["b_m"], cp["cx_px"], cp["cy_px"]
 
-    u = f * np.tan(np.linspace(-fov / 2, fov / 2, n)) + cx
-    inside = int(((u >= 0) & (u < W)).sum())
-    hfov = 2 * np.degrees(np.arctan(cx / f))
+    ang = make_line_angles(gp["n_vertical"], gp["n_horizontal"],
+                           gp["fov_deg"], gp.get("laser_tilt_deg", 0.0))
+    al = np.array([ang[f"V{i}"]["angle_rad"] for i in range(gp["n_vertical"])])
+    be = np.array([ang[f"H{j}"]["angle_rad"] for j in range(gp["n_horizontal"])])
 
-    r = {"n_lines": n, "n_inside": inside,
-         "hfov_deg": round(float(hfov), 2),
-         "fov_deg": float(gp["fov_deg"]),
-         "u_range": [round(float(u[0]), 1), round(float(u[-1]), 1)],
-         "fits": inside == n}
+    u_near = f * np.tan(al) - f * b / z0 + cx
+    u_far = f * np.tan(al) - f * b / z1 + cx
+    v = f * np.tan(be) + cy
 
-    if verbose and not r["fits"]:
-        print(f"  [캘리브레이션 경고] DOE 발산각 {r['fov_deg']}° > "
-              f"카메라 HFOV {r['hfov_deg']}°")
-        print(f"    V선 {n}개 중 {inside}개만 센서 안 "
-              f"(예측 u = {r['u_range'][0]} .. {r['u_range'][1]} px, 폭 {W})")
-        print(f"    → 격자가 시야보다 {r['fov_deg']/r['hfov_deg']:.1%} 넓다. "
-              f"양 끝 선은 촬영되지 않는다")
-        print(f"    해소안 ① DOE 발산각을 {FOV_DEG_FIT_SENSOR:.2f}° 이하로 "
-              f"(1.2m 투사 "
-              f"{2*1200*np.tan(np.radians(FOV_DEG_FIT_SENSOR/2)):.0f}mm)")
-        print(f"    해소안 ② 렌즈를 "
-              f"{(cx-50)/np.tan(np.radians(r['fov_deg']/2))*PIXEL_PITCH_UM/1e3:.2f}mm "
-              f"이하로 (936mm 전부 수용)")
+    fits = (u_near.min() >= m and u_far.max() <= W - m
+            and v.min() >= m and v.max() <= H - m)
+
+    # 이 설계로 쓸 수 있는 거리 범위 (가장 왼쪽/오른쪽 선 기준)
+    lo = f * b / max(cx + f * np.tan(al.min()) - m, 1e-9)
+    hi = f * b / max(cx + f * np.tan(al.max()) - (W - m), 1e-9)
+    usable = [round(float(lo), 2), round(float(hi), 2) if hi > 0 else None]
+
+    r = {"fits": bool(fits), "margin_px": m,
+         "work_z_m": [z0, z1],
+         "u_range_near": [round(float(u_near.min()), 1), round(float(u_near.max()), 1)],
+         "u_range_far": [round(float(u_far.min()), 1), round(float(u_far.max()), 1)],
+         "v_range": [round(float(v.min()), 1), round(float(v.max()), 1)],
+         "usable_z_m": usable,
+         "projection_mm": {z: round(float(projection_mm_at(z, gp["fov_deg"])), 0)
+                           for z in (z0, z1)}}
+
+    if verbose and not fits:
+        print(f"  [캘리브레이션 경고] 격자가 센서를 벗어난다")
+        print(f"    Z={z0}m  u = {r['u_range_near'][0]} .. {r['u_range_near'][1]}"
+              f"   (허용 {m:.0f} .. {W-m:.0f})")
+        print(f"    Z={z1}m  u = {r['u_range_far'][0]} .. {r['u_range_far'][1]}")
+        print(f"    v = {r['v_range'][0]} .. {r['v_range'][1]}"
+              f"   (허용 {m:.0f} .. {H-m:.0f})")
+        print(f"    → 발산각을 줄이거나 레이저 수렴각을 조정할 것")
     return r
 
 
@@ -195,6 +267,7 @@ def summary():
         ("주점",     f"{CX_PX:.1f}, {CY_PX:.1f} px", "c_x,c_y", "cx_px"),
         ("기선",     f"{BASELINE_M} m",            "b",       "b_m"),
         ("DOE 발산각", f"{GRID_PARAMS['fov_deg']}°", "—",      "fov_deg"),
+        ("레이저 수렴각", f"{LASER_TILT_DEG}°",         "δ",       "tilt"),
         ("V선 발사각", f"등각도 {N_VERTICAL}분할",     "α_i",     "alpha_i"),
         ("H선 발사각", f"등각도 {N_HORIZONTAL}분할",   "β_j",     "beta_j"),
         ("카메라–레이저 자세", "R=I, t=(b,0,0)",     "R, t",    "R_t"),
@@ -213,22 +286,31 @@ if __name__ == "__main__":
     print()
     print("유도값")
     print("-" * 72)
-    print(f"  f_px      = {LENS_FOCAL_MM}mm / {PIXEL_PITCH_UM}µm = {F_PX:.1f} px")
+    print(f"  f_px      = {LENS_FOCAL_MM}mm / {PIXEL_PITCH_UM}\u00b5m = {F_PX:.1f} px")
     print(f"  카메라 HFOV {2*np.degrees(np.arctan(CX_PX/F_PX)):.2f}°  "
           f"VFOV {2*np.degrees(np.arctan(CY_PX/F_PX)):.2f}°")
-    print(f"  DOE 발산각 = 2·atan({DOE_PROJECTION_MM/2:.0f}/{DOE_REFERENCE_Z_MM:.0f})"
-          f" = {FOV_DEG:.2f}°")
+    print(f"  격자 발산각 {FOV_DEG}°  수렴각 {LASER_TILT_DEG}°")
     print()
-    print("거리별 시야 · 깊이 노이즈 (σ_u = 0.2px, b = 150mm)")
+    print("거리별 시야 · 격자 투사폭 · 깊이 노이즈 (σ_u = 0.2px, b = 150mm)")
     print("-" * 72)
-    print(f"  {'거리':<8}{'시야 (가로×세로)':<26}{'mm/px':<10}{'σ_Z':<10}")
+    print(f"  {'거리':<7}{'카메라 시야':<22}{'격자 투사폭':<13}{'mm/px':<9}{'σ_Z':<8}")
     for z in (0.5, 1.0, 1.2, 1.5, 2.0, 3.0):
         w, h = fov_mm_at(z)
-        print(f"  {z:<8.1f}{f'{w:.0f} × {h:.0f} mm':<26}"
-              f"{w/IMAGE_W:<10.4f}{sigma_z_mm(z):<10.2f}")
+        print(f"  {z:<7.1f}{f'{w:.0f} × {h:.0f} mm':<22}"
+              f"{f'{projection_mm_at(z):.0f} mm':<13}{w/IMAGE_W:<9.4f}{sigma_z_mm(z):<8.2f}")
     print()
-    print("정합성 검사")
+    print("정합성 검사 — 격자가 작업거리 전 구간에서 센서 안에 드는가")
     print("-" * 72)
     r = check_consistency()
-    if r["fits"]:
-        print(f"  V선 {r['n_lines']}개 전부 센서 안. 이상 없음")
+    W, H = IMAGE_W, IMAGE_H
+    m = EDGE_MARGIN_PX
+    print(f"  작업거리 {r['work_z_m'][0]} ~ {r['work_z_m'][1]} m,  마진 {m:.0f}px")
+    print(f"    Z={r['work_z_m'][0]}m  u = {r['u_range_near'][0]:7.1f} .. "
+          f"{r['u_range_near'][1]:7.1f}   (허용 {m:.0f} .. {W-m:.0f})")
+    print(f"    Z={r['work_z_m'][1]}m  u = {r['u_range_far'][0]:7.1f} .. "
+          f"{r['u_range_far'][1]:7.1f}")
+    print(f"    v = {r['v_range'][0]:7.1f} .. {r['v_range'][1]:7.1f}"
+          f"   (허용 {m:.0f} .. {H-m:.0f})")
+    print(f"  판정: {'격자 전부 센서 안' if r['fits'] else '벗어남'}")
+    print(f"  이 설계로 쓸 수 있는 거리: "
+          f"{r['usable_z_m'][0]} ~ {r['usable_z_m'][1]} m")

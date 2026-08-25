@@ -224,8 +224,13 @@ def build_scene(seed=2026, sigma_u_px=SIGMA_U_PX, label_map_stride=2):
     W, H = CAMERA_PARAMS["resolution"]
 
     # ── 레이저 V선 투사 ──
+    # 발사각은 calibration 단일 출처 (레이저 수렴각이 α 에 포함된다)
+    _ang = _CALIB.make_line_angles(GRID["n_vertical"], GRID["n_vertical"],
+                                   GRID["fov_deg"],
+                                   _CALIB.GRID_PARAMS["laser_tilt_deg"])
+    alphas = np.array([_ang[f"V{i}"]["angle_rad"]
+                       for i in range(GRID["n_vertical"])])
     fov = np.radians(GRID["fov_deg"])
-    alphas = np.linspace(-fov / 2, fov / 2, GRID["n_vertical"])
     betas = np.linspace(-fov / 2, fov / 2, GRID["samples_per_line"])
 
     lines_pixels, lines_xyz, point_class = {}, {}, {}
