@@ -225,7 +225,9 @@ body.push(Tbl(
     ["검증", M("synth_scene.py"), "벽+바닥+동바리 해석적 합성 씬 (카메라 가림 포함)"],
     ["", M("experiment_segmentation.py"), "세그멘테이션 오차 분해 실험"],
     ["", M("experiment.py"), "기선 × 측정거리 sweep (Isaac)"],
-    ["", M("tests/test_regression.py"), "9군 회귀 검증"],
+    ["", M("inspect_png.py"), "렌더/촬영 이미지 한 장 검측 + 사양 대조(--check)"],
+    ["", M("experiment_spec.py"), "사양 프로파일 정확도 비교"],
+    ["", M("tests/test_regression.py"), "9군 회귀 검증 (프로파일 3종)"],
   ],
   [1200, 3100, 5338]));
 
@@ -362,7 +364,25 @@ body.push(H1("5. 현재 파라미터 설정값"));
 
 body.push(H2("5.1 캘리브레이션 상수"));
 body.push(P("calibration.py 가 단일 출처다. 이전에는 inspection.py 와 synth_scene.py 가 같은 값을 따로 들고 있어, 한쪽만 고치면 조용히 어긋났다.", { after: 80 }));
-body.push(Note("5.1~5.3 은 PDF 사양을 그대로 따르는 pdf 프로파일 기준이다. 정확도를 높인 improved 프로파일(현재 기본값)은 5.4 에 따로 정리했다. calibration.SPEC_PROFILES 에 둘 다 들어 있고 환경변수 LASER_GRID_PROFILE 로 전환한다."));
+body.push(Note("사양 프로파일이 셋이다. legacy(원본 v4, 현재 기본값) · pdf(PDF 사양) · improved(정확도 개선안). 실제 하드웨어 사양이 확정되지 않았고 이미 뽑아 둔 Isaac 렌더가 legacy 값으로 만들어졌으므로 기본값을 legacy 로 둔다. 5.1~5.3 은 pdf 프로파일, 5.4 는 improved 기준이다. calibration.SPEC_PROFILES 에 셋 다 들어 있고 환경변수 LASER_GRID_PROFILE 로 전환한다."));
+body.push(Gap(60));
+body.push(Tbl(
+  ["", "legacy (기본)", "pdf", "improved"],
+  [
+    ["출처", { t: "원본 v4 튜닝값", c: C.warn }, "PDF 2.2 사양표", "PDF + 정확도 유도"],
+    ["f_px", "1593.0", "2318.8", "2919.7"],
+    ["DOE 발산각", "60.82 °", "42.61 °", "42.61 °"],
+    ["격자선", "V21 + H21", "V20 + H20", "V40 + H20"],
+    ["기선", "150 mm", "150 mm", "180 mm"],
+    ["센서", "컬러 2448×2048", "컬러 2448×2048", "모노 3072×2560 + 520nm"],
+    ["레이저 수렴각", "0 °", "6.18 °", "7.40 °"],
+    ["발사각 분포", "각도 등간격", "사인 등간격", "사인 등간격"],
+    ["격자 피치 @1.2m", "70.4 mm", "49.3 mm", { t: "24.0 mm", c: C.accent }],
+    ["σ_Z @1.2m", "1.205 mm", "0.828 mm", { t: "0.274 mm", c: C.accent }],
+    ["센서 가장자리 여유", { t: "50 px", c: C.warn }, "120 px", "141 px"],
+  ],
+  [2000, 2200, 2200, 2638]));
+body.push(Note("검측식(eq1~eq6)은 이 값들에 의존하지 않는다. 삼각측량식이 f·b·α 를 인자로 받을 뿐이므로, 실제 하드웨어 사양이 들어오면 SPEC_PROFILES 딕셔너리 한 줄만 바꾸면 된다. 회귀 검증은 세 프로파일 모두에서 전체 통과한다."));
 body.push(...Code([
   "PIXEL_PITCH_UM = 3.45      # spec   PDF 「픽셀 >=3.45um」",
   "IMAGE_W/H      = 2448/2048 # spec   PDF 5MP 글로벌셔터",

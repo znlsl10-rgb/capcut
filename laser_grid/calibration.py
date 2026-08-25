@@ -57,7 +57,8 @@ N_HORIZONTAL = 20           # spec
 # DOE 발산각 — PDF 2.2 "120cm 에서 936×936mm" 에서 곧바로 나온다.
 #   FOV = 2·atan(468 / 1200) = 42.61°
 # 사양표에 각도로 적혀 있지는 않지만 다른 해석의 여지가 없으므로 spec 이다.
-FOV_DEG = float(np.degrees(2 * np.arctan(468.0 / 1200.0)))   # 42.612
+PDF_FOV_DEG = float(np.degrees(2 * np.arctan(468.0 / 1200.0)))   # 42.612
+FOV_DEG = PDF_FOV_DEG        # 활성 프로파일이 덮어쓴다 (use_profile)
 
 # 측정 거리 (PDF 1.1 "권장 1~1.5m")
 WORK_Z_MIN_M = 1.0          # spec
@@ -169,22 +170,44 @@ LASER_POWER_MW_SPEC = LASER_POWER_MW
 #     보상한다. 출력을 올리지 않으므로 눈 안전등급 재평가가 필요 없다.
 #   · 측정거리 1.0~1.5m — PDF 권장 유지.
 SPEC_PROFILES = {
+    # 주신 원본 코드(v4)의 값. 실제 하드웨어 사양이 확정되기 전까지의
+    # 기준선이며, 이미 Isaac 으로 뽑아 둔 렌더가 이 값으로 만들어졌다.
+    # 검측식(eq1~eq6)은 이 값에 의존하지 않으므로, 사양이 들어오면
+    # 아래 딕셔너리 한 줄만 바꾸면 된다.
+    "legacy": {
+        "label": "원본 v4",
+        "pixel_pitch_um": 3.45, "image_w": 2448, "image_h": 2048,
+        "sensor_color": "color", "optical_filter_nm": None,
+        "baseline_m": 0.150, "n_vertical": 21, "n_horizontal": 21,
+        # 원본은 f_px = 1593 을 직접 못박았다. 화소 3.45µm 로 역산하면
+        # 5.496mm 렌즈에 해당한다.
+        "lens_focal_mm": 1593.0 * 3.45 / 1000.0,
+        "fov_deg": 60.82, "doe_model": "equal_angle",
+        "sigma_u_px": 0.2, "laser_tilt_deg": 0.0,
+    },
     "pdf": {
         "label": "PDF 원안",
         "pixel_pitch_um": 3.45, "image_w": 2448, "image_h": 2048,
         "sensor_color": "color", "optical_filter_nm": None,
         "baseline_m": 0.150, "n_vertical": 20, "n_horizontal": 20,
-        "lens_focal_mm": 8.0, "sigma_u_px": 0.2, "laser_tilt_deg": 6.18,
+        "lens_focal_mm": 8.0, "fov_deg": PDF_FOV_DEG,
+        "doe_model": "equal_sine",
+        "sigma_u_px": 0.2, "laser_tilt_deg": 6.18,
     },
     "improved": {
         "label": "정확도 개선안",
         "pixel_pitch_um": 2.74, "image_w": 3072, "image_h": 2560,
         "sensor_color": "mono", "optical_filter_nm": 520,
         "baseline_m": 0.180, "n_vertical": 40, "n_horizontal": 20,
-        "lens_focal_mm": 8.0, "sigma_u_px": 0.1, "laser_tilt_deg": 7.40,
+        "lens_focal_mm": 8.0, "fov_deg": PDF_FOV_DEG,
+        "doe_model": "equal_sine",
+        "sigma_u_px": 0.1, "laser_tilt_deg": 7.40,
     },
 }
-ACTIVE_PROFILE = _os.environ.get("LASER_GRID_PROFILE", "improved")
+# 기본값은 원본 v4 다. 실제 하드웨어 사양이 확정되지 않았고, 이미 뽑아 둔
+# Isaac 렌더가 이 값으로 만들어졌기 때문이다. 사양이 들어오면 여기를 바꾸거나
+# 환경변수 LASER_GRID_PROFILE 로 전환한다.
+ACTIVE_PROFILE = _os.environ.get("LASER_GRID_PROFILE", "legacy")
 
 
 # =====================================================================
@@ -213,6 +236,17 @@ def projection_mm_at(z_m, fov_deg=None):
     return 2.0 * z_m * 1000.0 * np.tan(fov / 2.0)
 
 
+# DOE 발사각 분포 모델 — 프로파일이 정한다 (use_profile 이 덮어쓴다)
+#   "equal_sine"  회절격자의 실제 거동. m 차 회절광은 sin α_m = m·λ/d 이므로
+#                 발사각은 사인 등간격이다. 평면 벽에 맺힌 격자는 가장자리로
+#                 갈수록 간격이 벌어진다.
+#   "equal_angle" 각도 등간격. 원본 v4 가 쓰던 근사.
+# 두 모델의 바깥 포락선은 같고 안쪽 배치만 다르다. 42.61°·20선에서 위치 차가
+# 최대 0.19° 이고, 깊이로 환산하면 1.2m 에서 32mm 다. 출고 시 실측 α_i 가
+# 이 모델을 대체한다.
+DOE_ANGLE_MODEL = "equal_sine"
+
+
 CAMERA_PARAMS = {}
 GRID_PARAMS = {}
 
@@ -227,7 +261,7 @@ def use_profile(name=None):
     """
     global ACTIVE_PROFILE, PIXEL_PITCH_UM, IMAGE_W, IMAGE_H, BASELINE_M
     global N_VERTICAL, N_HORIZONTAL, LENS_FOCAL_MM, SIGMA_U_PX, LASER_TILT_DEG
-    global SENSOR_COLOR, OPTICAL_FILTER_NM
+    global SENSOR_COLOR, OPTICAL_FILTER_NM, FOV_DEG, DOE_ANGLE_MODEL
     global F_PX, CX_PX, CY_PX, SENSOR_W_MM, SENSOR_H_MM, SENSOR_DIAG_MM
 
     name = ACTIVE_PROFILE if name is None else name
@@ -244,6 +278,8 @@ def use_profile(name=None):
     LASER_TILT_DEG = p["laser_tilt_deg"]
     SENSOR_COLOR = p["sensor_color"]
     OPTICAL_FILTER_NM = p["optical_filter_nm"]
+    FOV_DEG = p["fov_deg"]
+    DOE_ANGLE_MODEL = p["doe_model"]
 
     F_PX = focal_px()
     CX_PX = IMAGE_W / 2.0              # assumed 센서 정중앙. 캘리브레이션 필요
@@ -265,17 +301,6 @@ def use_profile(name=None):
 
 
 use_profile(ACTIVE_PROFILE)
-
-
-# DOE 발사각 분포 모델
-#   "equal_sine"  회절격자의 실제 거동. m 차 회절광은 sin α_m = m·λ/d 이므로
-#                 발사각은 사인 등간격이다. 평면 벽에 맺힌 격자는 가장자리로
-#                 갈수록 간격이 벌어진다.
-#   "equal_angle" 각도 등간격. 이전 버전이 쓰던 근사.
-# 두 모델의 바깥 포락선(±21.31°)은 같고 안쪽 배치만 다르다. 42.61° 에서
-# 두 모델의 격자선 위치 차이는 최대 1.6° (1.2m 에서 약 34mm) 로, 예측 위치를
-# 벗어난 선을 놓칠 만큼 크다. 출고 시에는 실측 α_i 가 이 모델을 대체한다.
-DOE_ANGLE_MODEL = "equal_sine"
 
 
 def _fan_angles(n, fov_deg, model=None):
@@ -332,22 +357,59 @@ def predicted_u(alpha_rad, z_m, camera_params=None):
 
 
 # 값의 출처 등급 — 문서·보고서가 이 표를 그대로 쓴다.
-PROVENANCE = {
-    "f_px":   ("design",  "PDF 에 초점거리 없음. 8mm = 격자수용·심도·정밀도에서 유도"),
-    "b_m":    ("design",  "PDF 원안 150mm. 외형 210mm 내 최대 180mm"),
+# 값의 출처는 프로파일마다 다르다. legacy 는 하드웨어 사양이 아니라
+# 시뮬레이션 튜닝값이므로 전부 assumed 이고, pdf 는 사양표 그대로,
+# improved 는 사양에서 유도한 설계값이다.
+_PROV_COMMON = {
     "cx_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
     "cy_px":  ("assumed", "센서 정중앙 가정. 체커보드 캘리브레이션 필요"),
-    "fov_deg": ("spec",   "PDF 2.2 120cm 에서 936mm = 42.61°"),
-    "n_lines": ("design", "V선만 깊이를 준다. V만 2배 (PDF 원안 20+20)"),
-    "sensor":  ("design", "모노+대역통과로 σ_u 개선 (PDF 원안 컬러·무필터)"),
-    "tilt":    ("design", "레이저 축 수렴각. 기선 시차 이동량을 상쇄한다"),
-    "alpha_i": ("assumed", "회절 사인등간격 모델. DOE 실측 α_i 로 대체 필요"),
-    "beta_j":  ("assumed", "동일"),
-    "R_t":     ("assumed", "R=I, t=(b,0,0). 스테레오 캘리브레이션 필요"),
-    "R_ic":    ("assumed", "단위행렬. IMU–카메라 캘리브레이션 필요"),
-    "b_a":     ("assumed", "미구현. 가속도계 bias 보정 필요"),
-    "sigma_u": ("assumed", "모노+대역통과 기준 목표값. 실장비 측정 필요"),
+    "beta_j": ("assumed", "동일"),
+    "R_t":    ("assumed", "R=I, t=(b,0,0). 스테레오 캘리브레이션 필요"),
+    "R_ic":   ("assumed", "단위행렬. IMU–카메라 캘리브레이션 필요"),
+    "b_a":    ("assumed", "미구현. 가속도계 bias 보정 필요"),
 }
+_PROV_BY_PROFILE = {
+    "legacy": {
+        "f_px":    ("assumed", "원본 v4 튜닝값 1593px. 5.50mm 렌즈에 해당"),
+        "b_m":     ("spec",    "PDF 2.2 광축 150mm. 조립 후 실측 필요"),
+        "fov_deg": ("assumed", "원본 v4 값. PDF 의 936mm(42.61°)와 다름"),
+        "n_lines": ("assumed", "원본 v4 21+21. PDF 는 20+20(400교점)"),
+        "sensor":  ("spec",    "PDF 3.1 RGB 컬러"),
+        "tilt":    ("assumed", "원본은 레이저 축을 카메라와 평행하게 둠"),
+        "alpha_i": ("assumed", "등각도 분할. DOE 실측 α_i 로 대체 필요"),
+        "sigma_u": ("assumed", "0.2px 가정. 선검출 반복성 측정 필요"),
+    },
+    "pdf": {
+        "f_px":    ("design",  "PDF 에 초점거리 없음. 8mm = 격자수용·심도·정밀도에서 유도"),
+        "b_m":     ("spec",    "PDF 2.2 광축 150mm. 조립 후 실측 필요"),
+        "fov_deg": ("spec",    "PDF 2.2 120cm 에서 936mm = 42.61°"),
+        "n_lines": ("spec",    "PDF 2.2 수직20 + 수평20 = 400 교점"),
+        "sensor":  ("spec",    "PDF 3.1 RGB 컬러"),
+        "tilt":    ("design",  "레이저 축 수렴각. 기선 시차 이동량을 상쇄한다"),
+        "alpha_i": ("assumed", "회절 사인등간격 모델. DOE 실측 α_i 로 대체 필요"),
+        "sigma_u": ("assumed", "0.2px 가정. 선검출 반복성 측정 필요"),
+    },
+    "improved": {
+        "f_px":    ("design",  "PDF 에 초점거리 없음. 8mm = 격자수용·심도·정밀도에서 유도"),
+        "b_m":     ("design",  "PDF 원안 150mm. 외형 210mm 내 최대 180mm"),
+        "fov_deg": ("spec",    "PDF 2.2 120cm 에서 936mm = 42.61°"),
+        "n_lines": ("design",  "V선만 깊이를 준다. V만 2배 (PDF 원안 20+20)"),
+        "sensor":  ("design",  "모노+대역통과로 σ_u 개선 (PDF 원안 컬러·무필터)"),
+        "tilt":    ("design",  "레이저 축 수렴각. 기선 시차 이동량을 상쇄한다"),
+        "alpha_i": ("assumed", "회절 사인등간격 모델. DOE 실측 α_i 로 대체 필요"),
+        "sigma_u": ("assumed", "모노+대역통과 기준 목표값. 실장비 측정 필요"),
+    },
+}
+
+
+def provenance(profile=None):
+    """활성(또는 지정) 프로파일에서 각 값의 출처 등급과 근거."""
+    name = ACTIVE_PROFILE if profile is None else profile
+    out = dict(_PROV_COMMON)
+    out.update(_PROV_BY_PROFILE[name])
+    return out
+
+
 
 
 # =====================================================================
@@ -539,7 +601,7 @@ def compare_profiles(z=1.2):
     """두 프로파일의 파생값을 나란히 낸다."""
     keep = ACTIVE_PROFILE
     rows = []
-    for name in ("pdf", "improved"):
+    for name in ("legacy", "pdf", "improved"):
         use_profile(name)
         r = check_consistency(verbose=False)
         near, far = depth_of_field()
@@ -587,8 +649,9 @@ def summary():
         ("가속도계 bias", "미구현",                  "b_a",     "b_a"),
         ("선검출 픽셀오차", f"{SIGMA_U_PX} px",       "σ_u",     "sigma_u"),
     ]
+    prov = provenance()
     for name, val, sym, key in rows:
-        grade, note = PROVENANCE[key]
+        grade, note = prov[key]
         lines.append(f"  {name:<18} {sym:<8} {val:<22} [{grade:<7}] {note}")
     return "\n".join(lines)
 
@@ -599,19 +662,20 @@ if __name__ == "__main__":
     print("사양 프로파일 비교  (LASER_GRID_PROFILE 환경변수로 전환)")
     print("-" * 78)
     rows = compare_profiles()
-    keys = [("label", "프로파일", 16), ("sensor", "센서", 26),
-            ("filter", "광학필터", 16), ("lines", "격자선", 12),
-            ("b_mm", "기선mm", 8), ("sigma_u", "σ_u px", 8),
-            ("f_px", "f_px", 9), ("pitch_mm", "피치@1.2m", 11),
-            ("sigma_z_mm", "σ_Z@1.2m", 10), ("sigma_z_far_mm", "σ_Z@1.5m", 10),
-            ("dof", "심도 m", 16), ("margin_px", "격자여유px", 11)]
-    for k, title, w in keys:
-        line = f"  {title:<12}"
-        for r in rows:
-            line += f"{str(r[k]):<{w}}"
-        print(line)
-    print(f"  → σ_Z 개선 {rows[0]['sigma_z_mm']/rows[1]['sigma_z_mm']:.2f}배, "
-          f"공간 표본 밀도 개선 {rows[0]['pitch_mm']/rows[1]['pitch_mm']:.2f}배")
+    keys = [("label", "프로파일"), ("sensor", "센서"), ("filter", "광학필터"),
+            ("lines", "격자선"), ("b_mm", "기선mm"), ("sigma_u", "σ_u px"),
+            ("f_px", "f_px"), ("pitch_mm", "피치@1.2m"),
+            ("sigma_z_mm", "σ_Z@1.2m"), ("sigma_z_far_mm", "σ_Z@1.5m"),
+            ("dof", "심도 m"), ("margin_px", "격자여유px")]
+    w = max(len(str(r[k])) for _, _ in [(0, 0)] for r in rows
+            for k, _t in keys) + 3
+    print("  " + f"{'항목':<14}" + "".join(f"{r['name']:<{w}}" for r in rows))
+    for k, title in keys:
+        print("  " + f"{title:<14}" + "".join(f"{str(r[k]):<{w}}" for r in rows))
+    pdf_r = next(r for r in rows if r["name"] == "pdf")
+    imp_r = next(r for r in rows if r["name"] == "improved")
+    print(f"  → 개선안은 PDF 원안 대비 σ_Z {pdf_r['sigma_z_mm']/imp_r['sigma_z_mm']:.2f}배, "
+          f"공간 표본 밀도 {pdf_r['pitch_mm']/imp_r['pitch_mm']:.2f}배")
     print()
     print("PDF 2.2 사양표 원문 — 개선안이 지킨 것과 바꾼 것")
     print("-" * 78)

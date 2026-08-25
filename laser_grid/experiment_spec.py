@@ -49,7 +49,7 @@ def measure(profile, seeds=SEEDS):
         for k in ("wall", "floor", "shoring"):
             acc[k].append(r["errors_deg"].get(k, np.nan))
         gap = r.get("wall_gap_mm", np.nan)
-        acc["gap"].append(gap - SYN.GT_STRAIGHTEDGE_MM)
+        acc["gap"].append(gap - SYN.straightedge_truth_mm())
         acc["band"].append(r.get("wall_gap_upper_mm", np.nan) - gap)
         lm = EXP.perturb_mask(sc["label_map"], "dilate", 16,
                               np.random.default_rng(0))

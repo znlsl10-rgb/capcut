@@ -53,13 +53,31 @@ def test_hardware_spec():
     못 덮는데, 검사가 없어 조용히 넘어갔다.
 
     이제 사양 프로파일이 둘이므로 검사도 둘로 나뉜다.
+      · legacy   주신 원본 v4 의 값. 실제 사양이 확정되기 전 기준선이며
+                 이미 뽑아 둔 Isaac 렌더가 이 값으로 만들어졌다.
       · pdf      사양표 원문과 한 글자도 어긋나지 않아야 한다
       · improved 바뀐 항목은 근거가 있어야 하고, 물리 조건(격자 수용·
                  심도·목표 정밀도)은 pdf 와 똑같이 만족해야 한다
+
+    세 프로파일 모두 물리 조건은 통과해야 한다. 검측식(eq1~eq6)은 이
+    값들에 의존하지 않으므로, 실제 하드웨어 사양이 들어오면 프로파일
+    한 줄만 바꾸면 된다.
     """
     print("\n[0] 하드웨어 사양 정합성 — PDF 2.2")
     C = CALIB
     keep = C.ACTIVE_PROFILE
+
+    # ── legacy 는 원본 v4 값을 그대로 재현해야 한다 ──
+    C.use_profile("legacy")
+    check(f"[legacy] f_px {C.F_PX:.1f} = 원본 1593.0", abs(C.F_PX - 1593.0) < 0.1)
+    check(f"[legacy] 발산각 {C.FOV_DEG}° = 원본 60.82°", C.FOV_DEG == 60.82)
+    check(f"[legacy] 격자 {C.N_VERTICAL}+{C.N_HORIZONTAL} = 원본 21+21",
+          (C.N_VERTICAL, C.N_HORIZONTAL) == (21, 21))
+    check(f"[legacy] 발사각 모델 {C.DOE_ANGLE_MODEL} = 원본 등각도",
+          C.DOE_ANGLE_MODEL == "equal_angle")
+    a = [C.make_line_angles()[f"V{i}"]["angle_rad"] for i in range(21)]
+    check("[legacy] V선 간격이 정확히 등간격 (수렴각 0)",
+          bool(np.allclose(np.diff(a), np.radians(60.82 / 20))))
 
     # ── PDF 프로파일은 사양표와 일치해야 한다 ──
     C.use_profile("pdf")
@@ -79,7 +97,7 @@ def test_hardware_spec():
     proj = C.projection_mm_at(1.2)
     check(f"120cm 투사폭 {proj:.0f}mm = 사양 936mm (프로파일 무관)",
           abs(proj - 936.0) < 1.0)
-    for name in ("pdf", "improved"):
+    for name in ("legacy", "pdf", "improved"):
         C.use_profile(name)
         r = C.check_consistency(verbose=False)
         check(f"[{name}] 격자가 {C.WORK_Z_MIN_M}~{C.WORK_Z_MAX_M}m 내내 센서 안 "
@@ -97,8 +115,19 @@ def test_hardware_spec():
                  / icp["horizontal_aperture_mm"])
         check(f"[{name}] Isaac 카메라 설정 → f_px {f_usd:.1f} = {C.F_PX:.1f}",
               abs(f_usd - C.F_PX) < 0.5)
-        check(f"[{name}] 수렴각 {C.LASER_TILT_DEG}° 가 탐색 최적값과 일치",
-              abs(C.find_best_tilt()["tilt_deg"] - C.LASER_TILT_DEG) < 0.02)
+        best = C.find_best_tilt()
+        if name == "legacy":
+            # 원본은 레이저 축을 카메라와 평행하게 두었다(수렴각 개념 없음).
+            # 격자는 들어오지만 한쪽 여유를 그만큼 낭비한다. 값을 바꾸면
+            # 이미 뽑아 둔 렌더와 어긋나므로 지적만 하고 그대로 둔다.
+            r2 = C.check_consistency(verbose=False)
+            now = min(r2["u_range_near"][0], C.IMAGE_W - r2["u_range_far"][1])
+            check(f"[legacy] 수렴각 0° — 가장자리 여유 {now:.0f}px "
+                  f"(최적 {best['tilt_deg']}° 였다면 {best['margin_px']:.0f}px)",
+                  now >= C.EDGE_MARGIN_PX)
+        else:
+            check(f"[{name}] 수렴각 {C.LASER_TILT_DEG}° 가 탐색 최적값과 일치",
+                  abs(best["tilt_deg"] - C.LASER_TILT_DEG) < 0.02)
 
     # ── 개선안이 실제로 개선인지 ──
     rows = {r["name"]: r for r in C.compare_profiles()}
@@ -247,7 +276,7 @@ def test_axis_fit():
 def test_region_pipeline():
     """합성 씬 전 구간 — 두 세그멘테이션 백엔드"""
     print("\n[6] 영역별 검측 파이프라인 — 합성 씬 (벽+바닥+동바리)")
-    truth_gap = SYN.GT_STRAIGHTEDGE_MM
+    truth_gap = SYN.straightedge_truth_mm()
     scene = SYN.build_scene()
     gt = scene["gt"]
     want = {"wall": "wall_verticality_deg",
@@ -308,11 +337,10 @@ def test_region_pipeline():
             # 참값은 융기 높이(6mm)가 아니라 직선자 처짐(3.99mm)이다.
             # synth_scene.GT_STRAIGHTEDGE_MM 주석에 유도가 있다.
             #
-            # 허용치를 프로파일마다 다르게 두는 이유가 곧 개선안의 근거다.
-            # PDF 원안은 1.2m 격자 피치가 49.3mm 라 프로파일이 성기고,
-            # 상단 볼록껍질이 성긴 표본 위에서 그려지면 처짐이 과대평가된다
-            # (실측 +0.77mm). 개선안은 피치 24.0mm 에서 −0.08mm 다.
-            tol = {"pdf": 1.0}.get(CALIB.ACTIVE_PROFILE, 0.3)
+            # 참값은 프로파일마다 다르다. 화각이 다르면 벽에서 재는 구간이
+            # 달라지고, 직선자 처짐은 그 구간 길이에 달려 있기 때문이다.
+            # synth_scene.GT_STRAIGHTEDGE_MM 주석 참조.
+            tol = 0.35
             check(f"[{backend}] 벽 자 처짐 {gap:.2f}mm — 참값 {truth_gap}mm 대비 "
                   f"{gap-truth_gap:+.2f}mm (허용 ±{tol}mm, "
                   f"프로파일 {CALIB.ACTIVE_PROFILE})", abs(gap - truth_gap) <= tol)
