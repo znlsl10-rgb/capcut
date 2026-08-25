@@ -305,7 +305,7 @@ def project_to_plane_frame(points_3d, plane):
 
 def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
                     seed=42, min_inlier_frac=0.45, min_span_frac=0.2,
-                    min_slenderness=13.0):
+                    min_slenderness=13.0, noise_floor_m=0.004):
     """
     이상치에 강한 선형 부재 축 적합 (fit_axis_pca 의 robust 판).
 
@@ -440,23 +440,63 @@ def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
     else:
         r_est = 0.0
     out["radius_est_mm"] = round(r_est * 1000.0, 2)
-    out["slenderness"] = (round(out["length_m"] / r_est, 1)
-                          if r_est > 1e-6 else 0.0)
-    # 세장비에서 오는 각도 불확실도 (위 실측표에 맞춘 경험식)
-    out["angle_uncertainty_deg"] = (round(13.0 / out["slenderness"], 3)
-                                    if out["slenderness"] > 0 else None)
 
-    if out["inlier_frac"] < min_inlier_frac:
+    # ── 단면이 잡혔는가 ──
+    # 격자선이 한 줄만 걸리면 점이 한 직선 위에 놓여 반경 퍼짐이 0 이 된다.
+    # 이때 세장비(길이/반경)는 무한대도 0 도 아니고 **정의되지 않는다**.
+    # 그런데 세장비 게이트가 지키려는 것은 "원통 단면이 주축을 끌어당겨
+    # 축이 흔들리는" 실패다. 퍼짐이 없으면 끌어당길 것도 없으므로 그
+    # 게이트를 적용할 근거 자체가 사라진다. 오히려 이 경우가 축 방향은
+    # 더 깨끗하다 — 원통의 모선(surface generator)은 축과 나란하기 때문이다.
+    #
+    # 대신 잃는 것이 있다. 지름을 모르므로 부재 종류(동바리/기둥/철근)와
+    # KCS 허용치를 고를 수 없고, 굽음도 판정할 수 없다.
+    resolved = r_est > noise_floor_m
+    out["cross_section_resolved"] = bool(resolved)
+    L = out["length_m"]
+    if resolved:
+        out["slenderness"] = round(L / r_est, 1) if L else 0.0
+        out["angle_uncertainty_deg"] = (round(13.0 / out["slenderness"], 3)
+                                        if out["slenderness"] > 0 else None)
+    else:
+        # 직선 적합의 방향 불확실도 — 표준 결과를 그대로 쓴다.
+        #   기울기 분산 = σ² / (N · Var(x)),  Var(x) = L²/12
+        #   → σ_각 = σ·√12 / (√N · L)   [rad]
+        # σ 는 축에서의 잔차 RMS 로 잡되, 노이즈 바닥보다 작게 주장하지
+        # 않는다(raycast 데이터는 잔차가 0 이라 그대로 두면 0° 가 나온다).
+        out["slenderness"] = None
+        sig = max(out["radial_rms_mm"] / 1000.0, noise_floor_m)
+        n_in = int(best_mask.sum())
+        if L and L > 1e-6 and n_in > 2:
+            out["angle_uncertainty_deg"] = round(float(np.degrees(
+                sig * np.sqrt(12.0) / (np.sqrt(n_in) * L))), 3)
+        else:
+            out["angle_uncertainty_deg"] = None
+        out["note"] = (f"단면 미확인 — 반경 퍼짐 {r_est*1000:.1f}mm 가 "
+                       f"노이즈 바닥 {noise_floor_m*1000:.0f}mm 이하다. "
+                       f"격자선이 한 줄만 걸린 것으로 보이며, 축 방향은 "
+                       f"유효하지만 지름·부재 종류·굽음은 판정할 수 없다")
+
+    if out["direction"] is None or out["length_m"] is None:
+        # PCA 자체가 실패했다(점이 모자라거나 한 점에 뭉쳐 있다).
+        # 아래 세장비 문구는 길이·반경이 있어야 쓸 수 있으므로 여기서 끊는다.
+        out["is_valid"] = False
+        out.setdefault("reject_reason", "축 적합 실패 — 점이 부족하거나 퍼짐이 없음")
+    elif out["inlier_frac"] < min_inlier_frac:
         out["is_valid"] = False
         out["reject_reason"] = (f"축 주변 점 비율 부족 "
                                 f"({out['inlier_frac']:.2f} < {min_inlier_frac})")
-    elif out["slenderness"] < min_slenderness:
+    elif out["slenderness"] is not None and out["slenderness"] < min_slenderness:
         out["is_valid"] = False
         out["reject_reason"] = (
             f"부재 노출 길이 부족 — 보이는 길이 {out['length_m']*1000:.0f}mm, "
             f"반경 {out['radius_est_mm']:.0f}mm, 세장비 {out['slenderness']:.1f} "
             f"< {min_slenderness:.0f}. 예상 각도오차 "
             f"±{out['angle_uncertainty_deg']:.1f}° 로 측정이 성립하지 않는다. "
+            if out["angle_uncertainty_deg"] is not None else
+            f"부재 노출 길이 부족 — 보이는 길이 {out['length_m']*1000:.0f}mm, "
+            f"반경 {out['radius_est_mm']:.0f}mm. 측정이 성립하지 않는다. ")
+        out["reject_reason"] += (
             f"부재가 세로로 더 길게 담기도록 다시 촬영할 것")
     return out
 

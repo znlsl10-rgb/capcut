@@ -103,8 +103,15 @@ def measure_region(points_3d, cls, g_hat, camera_params,
         # 부재가 짧게만 보이면 원통 단면이 주축을 끌어당겨 각도가 흔들린다.
         # 측정값만 보고 합격을 내주면 그 흔들림이 판정에 그대로 숨는다.
         unc = ax.get("angle_uncertainty_deg")
+        j = out["judge"]
+        j["cross_section_resolved"] = ax.get("cross_section_resolved", True)
+        if ax.get("note"):
+            # 단면이 잡히지 않았다는 사실은 판정만큼 중요하다. 지름을
+            # 모르면 부재 종류(동바리/기둥/철근)를 고를 수 없고, 그에 따라
+            # 적용할 KCS 허용치도 고를 수 없다. 조서 비고에 남긴다.
+            j["note"] = ((j.get("note") + " / ") if j.get("note") else "") \
+                + ax["note"]
         if unc is not None:
-            j = out["judge"]
             j["angle_uncertainty_deg"] = unc
             j["slenderness"] = ax.get("slenderness")
             tol = j.get("allow_deg", 0.5)
@@ -114,7 +121,8 @@ def measure_region(points_3d, cls, g_hat, camera_params,
                 j["note"] = (
                     f"측정 {theta:.3f}° 는 허용 {tol}° 이내이나, 부재가 "
                     f"{ax['length_m']*1000:.0f}mm 만 보여(세장비 "
-                    f"{ax['slenderness']:.1f}) 각도 불확실도가 ±{unc:.2f}° 다. "
+                    f"{ax['slenderness'] if ax.get('slenderness') else '미확인'}) "
+                    f"각도 불확실도가 ±{unc:.2f}° 다. "
                     f"합쳐서 {abs(theta)+unc:.2f}° 로 허용치를 넘을 수 있어 "
                     f"합격 판정을 내리지 않는다. 부재를 세로로 더 길게 담아 "
                     f"재촬영할 것")

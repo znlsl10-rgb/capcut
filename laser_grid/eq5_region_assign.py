@@ -253,7 +253,8 @@ def assign_points_to_regions(table, label_map, class_names,
 def geometric_evidence(points_3d, g_hat,
                        linear_ratio=0.15, planar_ratio=0.15,
                        thin_extent_m=0.12, align_deg=30.0,
-                       min_thickness_ratio=0.02):
+                       min_thickness_ratio=0.02,
+                       min_planar_extent_m=0.004):
     """
     점군 자체가 말하는 형상·자세를 뽑는다 (의미 라벨과 독립).
 
@@ -291,6 +292,37 @@ def geometric_evidence(points_3d, g_hat,
     g = _EQ3.normalize(g_hat)
 
     out["thickness_ratio"] = float(r32)
+
+    # ── 퇴화 검사: 1차원 점집합에는 평면을 맞출 수 없다 ──
+    # 격자선 한 줄만 걸린 부재(가는 기둥·동바리)는 점이 한 직선 위에
+    # 놓인다. 그 집합을 지나는 평면은 무수히 많으므로 법선이 아무 값이나
+    # 나오고, 그대로 두면 "입사각 89.9°, 수직도 0.0000°, 합격" 같은
+    # 지어낸 결과가 조서에 실린다. 실제 내보내기에서 기둥 3개가 전부
+    # 그렇게 나왔다.
+    #
+    # 두 번째 주축의 실제 크기로 판정한다. 비율이 아니라 미터로 봐야
+    # 한다 — 아주 긴 선은 λ2/λ1 이 작아도 λ2 자체는 클 수 있고, 짧고
+    # 통통한 조각은 그 반대다. 실측한 횡방향 퍼짐:
+    #
+    #   동바리 Ø48.6mm       14.25 mm     ← 원통 표면이 감기며 생긴 폭
+    #   철근   Ø25.4mm        7.23 mm
+    #   ─────────────── 문턱 4mm ───────────────
+    #   벽 위 V선 한 줄        0.96 mm     ← σ_Z 노이즈뿐
+    #   기둥 위 V선 한 줄      0.00 mm     ← raycast, 노이즈 없음
+    #
+    # 문턱은 측정 노이즈(σ_normal)보다 커야 뜻이 있다. 노이즈가 부재
+    # 반경만 해지면 그 부재는 애초에 단면이 잡히지 않는다.
+    ext2 = float(np.sqrt(max(lam[1], 0.0)))
+    if ext2 < min_planar_extent_m:
+        axis = vt[0] / np.linalg.norm(vt[0])
+        th = _EQ3.measure_from_gravity(axis, g, "axis_vertical")
+        out.update(shape="degenerate_line", axis=axis, theta_deg=th,
+                   confidence=0.0,
+                   note=(f"횡방향 퍼짐 {ext2*1000:.1f}mm — 격자선이 한 줄만 "
+                         f"걸려 단면이 잡히지 않는다. 평면을 맞출 수 없고, "
+                         f"선형 부재인지 면의 일부인지는 깊이 불연속으로만 "
+                         f"가릴 수 있다"))
+        return out
     if (r21 < linear_ratio
             and np.sqrt(max(lam[1], 0.0)) < thin_extent_m
             and r32 >= min_thickness_ratio):

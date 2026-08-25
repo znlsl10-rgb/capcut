@@ -142,7 +142,7 @@ def _backend_gt(rgb_off, label_map=None, id_to_semantic=None, **kw):
 def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
                   plane_threshold_m=0.01, min_plane_points=60,
                   max_planes=4, cluster_eps_m=0.08, min_linear_points=15,
-                  merge_gap_m=0.25, **kw):
+                  merge_gap_m=0.25, occluder_margin_m=0.10, **kw):
     """
     3D 점군만으로 영역을 나눈다 — 모델·네트워크 불필요한 폴백.
 
@@ -224,9 +224,9 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
         inl_global = remaining[inlier_mask]
         consumed = []
         groups = _merge_occlusion_split(
-            pts[inl_global],
+            pts, inl_global,
             _spatial_groups(pts[inl_global], cluster_eps_m, min_plane_points),
-            merge_gap_m)
+            plane, merge_gap_m)
         for grp in groups:
             gidx = inl_global[grp]
             ev = _EQ5.geometric_evidence(pts[gidx], g_hat)
@@ -254,16 +254,36 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
     # ── 3~4. 잔여 점 + 보류 점에서 선형 부재 (선추출에서 놓친 것) ──
     leftover = (np.union1d(remaining, np.concatenate(deferred))
                 if deferred else remaining)
+    n_single_line = 0
     for grp in _spatial_groups(pts[leftover], cluster_eps_m, min_linear_points):
         gidx = leftover[grp]
         ev = _EQ5.geometric_evidence(pts[gidx], g_hat)
-        if ev["shape"] != "linear_vertical":
-            continue
-        labels[gidx] = next_id
-        # 기하는 동바리/기둥/철근을 구분하지 못한다 → 가장 흔한 shoring 으로
-        # 두되, meta 에 구분 불가임을 남긴다.
-        class_names[next_id] = "shoring"
-        next_id += 1
+        if ev["shape"] == "linear_vertical":
+            labels[gidx] = next_id
+            # 기하는 동바리/기둥/철근을 구분하지 못한다 → 가장 흔한 shoring 으로
+            # 두되, meta 에 구분 불가임을 남긴다.
+            class_names[next_id] = "shoring"
+            next_id += 1
+        elif (ev["shape"] == "degenerate_line"
+              and ev.get("theta_deg") is not None
+              and ev["theta_deg"] < 30.0
+              and _stands_in_front(pts, gidx, g_hat, occluder_margin_m)):
+            # 격자선이 한 줄만 걸린 부재. 단면이 잡히지 않아 형상만으로는
+            # 벽에 그은 선 한 줄과 구분되지 않는다. 그러나 그 선이 주변
+            # 면보다 뚜렷하게 **앞에** 서 있으면 가림물, 곧 부재다.
+            #
+            # 연직에서 30° 안이라는 조건을 함께 건다. 이것이 없으면 면
+            # 경계의 짧은 조각이 부재로 잡혀 "축 수직도 89.8°, 기준초과"
+            # 같은 결과가 나온다(실제 내보내기에서 44점짜리 조각이 그랬다).
+            # linear_vertical 판정과 같은 문턱이다.
+            #
+            # 축 방향은 오히려 이 경우가 더 깨끗하다. 원통 단면이 주축을
+            # 끌어당기는 일이 없기 때문이다. 대신 지름을 알 수 없으므로
+            # 부재 종류(동바리/기둥/철근)와 세장비 판정은 성립하지 않는다.
+            labels[gidx] = next_id
+            class_names[next_id] = "shoring"
+            next_id += 1
+            n_single_line += 1
 
     bg_id = next_id
     class_names[bg_id] = "background"
@@ -273,35 +293,73 @@ def _backend_geom(rgb_off, table=None, g_hat=None, camera_params=None,
             "point_labels": labels,
             "meta": {"n_regions": next_id,
                      "unassigned": int((labels == bg_id).sum()),
-                     "caveat": "기하 전용 백엔드는 동바리/기둥/철근과 "
-                               "벽/거푸집/조적을 구분하지 못함"}}
+                     "single_line_members": n_single_line,
+                     "caveat": (
+                         "기하 전용 백엔드는 동바리/기둥/철근과 벽/거푸집/조적을 "
+                         "구분하지 못함"
+                         + (f" / 격자선이 한 줄만 걸린 부재 {n_single_line}개 — "
+                            f"단면 미확인, 축 방향만 유효"
+                            if n_single_line else ""))}}
 
 
-def _merge_occlusion_split(points, groups, merge_gap_m):
+def _stands_in_front(pts, gidx, g_hat, margin_m):
     """
-    같은 평면에서 갈라진 조각 중 **가림 그림자** 때문에 갈라진 것만 합친다.
+    이 점 무리가 주변 면보다 앞에 서 있는가 (가림물인가).
+
+    격자선 한 줄짜리 무리는 형상만으로는 부재인지 면의 일부인지 알 수
+    없다. 가릴 수 있는 것은 깊이뿐이다. 무리의 화면상 좌우 이웃과 깊이를
+    비교해, 무리가 뚜렷하게 가까우면 앞에 선 부재로 본다.
+
+    이웃을 화면이 아니라 3D 로 고른다. 이 단계에는 화소 좌표가 없고,
+    같은 시선 방향에서 더 먼 점을 찾으면 되므로 시선 각도로 이웃을
+    정의하는 편이 정확하다.
+    """
+    sub = pts[gidx]
+    if len(sub) < 5:
+        return False
+    z = float(np.median(sub[:, 2]))
+    # 무리의 시선 방향(단위벡터) 중심
+    d0 = sub / np.linalg.norm(sub, axis=1, keepdims=True)
+    c = d0.mean(axis=0); c /= np.linalg.norm(c)
+
+    others = np.setdiff1d(np.arange(len(pts)), gidx, assume_unique=False)
+    if len(others) < 20:
+        return False
+    o = pts[others]
+    do = o / np.linalg.norm(o, axis=1, keepdims=True)
+    ang = np.degrees(np.arccos(np.clip(do @ c, -1, 1)))
+    # 시야각 15° 안의 이웃 — 같은 장면 안이면서 무리 밖
+    near = o[ang < 15.0]
+    if len(near) < 20:
+        return False
+    z_bg = float(np.median(near[:, 2]))
+    return (z_bg - z) > margin_m
+
+
+def _merge_occlusion_split(all_points, member_idx, groups, plane, merge_gap_m,
+                           front_margin_m=0.03):
+    """
+    같은 평면에서 갈라진 조각 중 **가림 때문에** 갈라진 것만 다시 합친다.
 
     왜 필요한가
     ----------
     DBSCAN eps 는 점 밀도에 맞춰 자동으로 좁아진다. 격자를 조밀하게 만들면
-    eps 도 함께 좁아지므로, 앞에 선 동바리가 벽에 드리운 폭 ~5cm 의 빈 띠가
-    갑자기 "서로 다른 두 벽" 으로 보이게 된다. 실제로 V선을 20 → 40 개로
-    늘리자 벽 6,844점이 4,188 + 2,667 로 쪼개졌고, 그 결과 직선자 프로파일
-    길이가 1.15m 에서 0.69m 로 줄어 평활도가 3.9mm 에서 2.6mm 로 낮게
-    나왔다. 각도는 두 조각 모두 같은 법선을 주므로 멀쩡했고, 그래서
-    평활도만 조용히 틀렸다.
+    eps 도 함께 좁아지므로, 앞에 선 부재가 벽에 드리운 빈 띠가 갑자기
+    "서로 다른 두 벽" 으로 보이게 된다. 실제로 V선을 20 → 40 개로 늘리자
+    벽 6,844점이 4,188 + 2,667 로 쪼개졌고, 직선자 프로파일이 1.15m 에서
+    0.69m 로 줄어 평활도가 3.9mm 에서 2.6mm 로 낮게 나왔다. 각도는 두
+    조각 모두 같은 법선을 주므로 멀쩡했고, 그래서 평활도만 조용히 틀렸다.
 
-    무엇으로 구분하나
-    ----------------
-    가림 그림자는 좁고(부재 지름 정도), 개구부·벽 분리는 넓다.
-    두 조각의 최근접 거리가 merge_gap_m 미만이면 그림자로 보고 합친다.
-    Ø48.6mm 동바리의 그림자는 10cm 안쪽, 문 개구부는 80cm 이상이므로
-    25cm 를 문턱으로 두면 둘이 섞이지 않는다.
+    무엇으로 구분하나 — 두 가지를 순서대로 본다.
+      1. 좁은 틈      두 조각의 최근접 거리가 merge_gap_m 미만이면 합친다.
+                     Ø48.6mm 동바리의 그림자는 10cm 안쪽이다.
+      2. 가림물 확인   틈이 넓어도, 그 사이에 **평면보다 앞에 있는 점**이
+                     있으면 가림물이 서 있다는 뜻이므로 합친다. 실제
+                     내보내기에서 기둥 3개가 벽을 4토막 낸 경우가 이쪽이다
+                     (기둥 간격 0.5m 이상이라 1번으로는 안 걸린다).
 
-    합치는 것이 늘 옳지는 않다. 같은 평면 위에서 25cm 안쪽으로 떨어진 두
-    부재(좁은 벽기둥 사이 등)는 하나로 묶인다. 다만 그 경우에도 두 조각은
-    같은 평면이므로 각도 판정은 바뀌지 않고, 평활도는 실제 면을 더 길게
-    보게 되어 KCS 직선자 취지에 오히려 맞는다.
+    개구부·서로 다른 벽은 둘 다에 걸리지 않는다. 사이가 넓고, 그 사이에
+    앞에 선 것도 없기 때문이다.
     """
     if len(groups) < 2 or merge_gap_m <= 0:
         return groups
@@ -310,6 +368,9 @@ def _merge_occlusion_split(points, groups, merge_gap_m):
     except Exception:
         return groups
 
+    P = np.asarray(all_points, float)
+    member = np.asarray(member_idx)
+    pts = P[member]
     parent = list(range(len(groups)))
 
     def find(i):
@@ -317,11 +378,41 @@ def _merge_occlusion_split(points, groups, merge_gap_m):
             parent[i] = parent[parent[i]]; i = parent[i]
         return i
 
-    trees = [cKDTree(points[g]) for g in groups]
+    # 평면 법선을 센서(원점) 쪽으로 맞춘다. 그래야 부호 있는 거리의
+    # 양수가 "앞에 있다" 를 뜻한다.
+    n = np.array(plane[:3], float); d = float(plane[3])
+    nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        return groups
+    n /= nn; d /= nn
+    if d < 0:                      # 원점의 부호 있는 거리 = d
+        n, d = -n, -d
+    outside = np.setdiff1d(np.arange(len(P)), member, assume_unique=False)
+    tree_out = cKDTree(P[outside]) if len(outside) else None
+
+    trees = [cKDTree(pts[g]) for g in groups]
     for i in range(len(groups)):
         for j in range(i + 1, len(groups)):
-            d, _ = trees[j].query(points[groups[i]], k=1)
-            if float(np.min(d)) < merge_gap_m:
+            dist, idx = trees[j].query(pts[groups[i]], k=1)
+            k = int(np.argmin(dist))
+            gap = float(dist[k])
+            if gap < merge_gap_m:
+                merge = True
+            elif tree_out is None:
+                merge = False
+            else:
+                # 두 조각의 최근접 쌍을 잇는 선분 위에 가림물이 있는가
+                a = pts[groups[i]][k]
+                b = pts[groups[j]][int(idx[k])]
+                t = np.linspace(0.15, 0.85, 7)[:, None]
+                seg = a * (1 - t) + b * t
+                near = tree_out.query_ball_point(seg, r=max(gap * 0.5, 0.05))
+                cand = sorted({q for lst in near for q in lst})
+                merge = False
+                if cand:
+                    sd = P[outside][cand] @ n + d      # 양수 = 센서 쪽
+                    merge = bool((sd > front_margin_m).any())
+            if merge:
                 ri, rj = find(i), find(j)
                 if ri != rj:
                     parent[ri] = rj
