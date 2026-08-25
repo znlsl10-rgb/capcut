@@ -417,7 +417,7 @@ def region_uncertainty(points_3d, camera_params, normal=None,
            flatness_measurable(bool)
     """
     pts = np.asarray(points_3d, dtype=float)
-    f = float(camera_params.get("f_px", 1593.0))
+    f = float(camera_params.get("f_px", 3478.3))
     b = float(camera_params.get("b_m", 0.150))
     Z = pts[:, 2]
     z_mean = float(np.mean(Z))
@@ -499,7 +499,7 @@ if __name__ == "__main__":
           f"{'PASS' if bad.sum() == 2 and bad[19] and bad[20] else 'FAIL'}")
 
     # 5) 불확실도: 정면 벽 vs 경사 바닥
-    cp = {"f_px": 1593.0, "b_m": 0.150}
+    cp = {"f_px": 3478.3, "b_m": 0.150}
     n_w = geometric_evidence(wall, g)["normal"]
     n_f = geometric_evidence(floor, g)["normal"]
     uw = region_uncertainty(wall, cp, n_w)

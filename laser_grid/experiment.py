@@ -277,8 +277,10 @@ def _run_quality_metrics(depth_points, extra):
 
     # 3D 점군 구성
     pts = np.array([[d["X_rec"] if "X_rec" in d else
-                     (d.get("u_px",0)-1224)*d["Z_rec"]/1593+0.15,
-                     (d.get("v_px",0)-1024)*d["Z_rec"]/1593,
+                     (d.get("u_px",0)-CAMERA_PARAMS["cx_px"])*d["Z_rec"]
+                        /CAMERA_PARAMS["f_px"]+CAMERA_PARAMS["b_m"],
+                     (d.get("v_px",0)-CAMERA_PARAMS["cy_px"])*d["Z_rec"]
+                        /CAMERA_PARAMS["f_px"],
                      d["Z_rec"]]
                     for d in depth_points if d.get("Z_rec") and d["Z_rec"]>0],
                    dtype=float)

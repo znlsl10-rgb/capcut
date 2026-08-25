@@ -53,18 +53,29 @@ GT_SHORING_TILT_DEG = 1.2   # 동바리가 연직에서 벗어난 각
 GT_BUMP_MM = 6.0            # 벽면 융기 깊이
 GT_BUMP_SIGMA_M = 0.05
 
-DEVICE_PITCH_DEG = 22.0     # 장비를 아래로 숙인 각 (벽+바닥 동시 촬영)
+# 장비를 아래로 숙인 각. 실제 렌즈(12mm)의 VFOV 는 32.81° 로 좁아,
+# 22° 로는 바닥이 화면에 들어오지 않는다(실측: 바닥 점 0개).
+# 40° 에서 벽·바닥·동바리가 모두 잡힌다.
+# 34° 에서 벽 2372 · 바닥 345 · 동바리 263 점으로 균형이 맞는다.
+# 더 눕히면 바닥 점은 늘지만 벽 입사각이 커져 평활도 분해능이 나빠진다.
+DEVICE_PITCH_DEG = 34.0
 WALL_DIST_M = 1.20          # 벽까지 거리
 FLOOR_DROP_M = 0.90         # 장비에서 바닥까지 (중력 방향)
 SHORING_RADIUS_M = 0.0243   # Ø48.6mm 파이프서포트
 SHORING_LENGTH_M = 2.40
-SHORING_X_M = 0.30       # 동바리 설치 위치 (조사기 좌표계)
-SHORING_Z_M = 0.95
+# 동바리 설치 위치. 12mm 렌즈의 좁은 VFOV(32.81°)에서는 배치에 따라
+# 부재가 짧게만 담겨 축 방향이 결정되지 않는다. X=0.20, Z=1.15 에서
+# 약 580mm(세장비 24)가 보여 측정이 성립한다.
+SHORING_X_M = 0.20
+SHORING_Z_M = 1.15
 
-CAMERA_PARAMS = {"f_px": 1593.0, "b_m": 0.150, "cx_px": 1224.0,
-                 "cy_px": 1024.0, "resolution": [2448, 2048]}
-GRID = {"n_vertical": 21, "fov_deg": 60.82, "samples_per_line": 250}
-SIGMA_U_PX = 0.2
+# 캘리브레이션은 calibration.py 단일 출처
+_CALIB = _load("calibration")
+CAMERA_PARAMS = dict(_CALIB.CAMERA_PARAMS)
+GRID = {"n_vertical": _CALIB.N_VERTICAL,
+        "fov_deg": _CALIB.GRID_PARAMS["fov_deg"],
+        "samples_per_line": _CALIB.GRID_PARAMS["samples_per_line"]}
+SIGMA_U_PX = _CALIB.SIGMA_U_PX
 
 CLASS_IDS = {0: "class:BACKGROUND", 1: "class:wall",
              2: "class:floor", 3: "class:shoring"}

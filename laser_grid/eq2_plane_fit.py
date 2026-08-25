@@ -304,7 +304,8 @@ def project_to_plane_frame(points_3d, plane):
     return uvw, (e1, e2, n), origin
 
 def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
-                    seed=42, min_inlier_frac=0.45, min_span_frac=0.2):
+                    seed=42, min_inlier_frac=0.45, min_span_frac=0.2,
+                    min_slenderness=13.0):
     """
     이상치에 강한 선형 부재 축 적합 (fit_axis_pca 의 robust 판).
 
@@ -330,6 +331,31 @@ def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
     min_span_frac : float
         축 방향을 정할 두 점이 최소한 전체 범위의 이 비율만큼 떨어져야
         한다. 가까운 두 점으로 방향을 정하면 노이즈가 그대로 각도가 된다.
+    min_slenderness : float
+        (보이는 축 길이 / 부재 반경) 하한. 이 값을 못 넘으면 축 방향을
+        신뢰할 수 없다고 보고 is_valid=False 로 돌려보낸다.
+
+        근거: 원통 표면점의 주축은 축 방향 분산과 단면 분산의 경쟁으로
+        정해진다. 부재가 짧게만 보이면 단면이 주축을 끌어당겨, 노이즈가
+        전혀 없어도 각도가 틀어진다. Ø48.6mm 파이프서포트로 측정한 값
+        (σ=0.3mm, 20회 시행 최대오차):
+
+            노출길이   L/r    최대오차
+              100mm    4.1     11.57°
+              178mm    7.3      2.08°
+              300mm   12.3      1.82°
+              500mm   20.6      0.64°
+              800mm   32.9      0.18°
+             1200mm   49.4      0.06°
+
+        경험식 (표에 맞춤):  각도 불확실도 ≈ 13 / (L/r)  [°]
+        허용 ±0.5° 를 지키려면 L/r ≥ 26 (Ø48.6mm 기준 약 0.63m).
+
+        다만 여기서는 L/r < 26 을 곧바로 버리지 않는다. 불확실도를 함께
+        돌려주고, 측정값에 그 폭을 더해도 허용치 안이면 합격, 걸치면
+        판정보류로 내보내는 편이 정보를 더 준다(평활도 분해능 처리와
+        같은 원칙). 하드 기각은 불확실도가 허용치의 두 배를 넘는
+        L/r < 13 일 때만 한다.
 
     Returns
     -------
@@ -383,13 +409,40 @@ def fit_axis_ransac(points_3d, radius_m=0.06, min_points=8, max_trials=200,
             break
         best_mask = new_mask
 
-    out = fit_axis_pca(pts[best_mask], min_points=min_points)
+    sel = pts[best_mask]
+    out = fit_axis_pca(sel, min_points=min_points)
     out["inlier_mask"] = best_mask
     out["inlier_frac"] = round(float(best_mask.mean()), 4)
     out["n_points_total"] = N
+
+    # 부재 반경 추정 — 축에서의 반경 거리 95백분위.
+    # radial_rms 는 보이는 반쪽만 잡히면 실제 반경보다 작게 나오므로
+    # 세장비 판정에는 쓸 수 없다.
+    if out["direction"] is not None and len(sel) >= 3:
+        rel = sel - out["centroid"]
+        radial = np.linalg.norm(
+            rel - np.outer(rel @ out["direction"], out["direction"]), axis=1)
+        r_est = float(np.percentile(radial, 95))
+    else:
+        r_est = 0.0
+    out["radius_est_mm"] = round(r_est * 1000.0, 2)
+    out["slenderness"] = (round(out["length_m"] / r_est, 1)
+                          if r_est > 1e-6 else 0.0)
+    # 세장비에서 오는 각도 불확실도 (위 실측표에 맞춘 경험식)
+    out["angle_uncertainty_deg"] = (round(13.0 / out["slenderness"], 3)
+                                    if out["slenderness"] > 0 else None)
+
     if out["inlier_frac"] < min_inlier_frac:
         out["is_valid"] = False
         out["reject_reason"] = (f"축 주변 점 비율 부족 "
                                 f"({out['inlier_frac']:.2f} < {min_inlier_frac})")
+    elif out["slenderness"] < min_slenderness:
+        out["is_valid"] = False
+        out["reject_reason"] = (
+            f"부재 노출 길이 부족 — 보이는 길이 {out['length_m']*1000:.0f}mm, "
+            f"반경 {out['radius_est_mm']:.0f}mm, 세장비 {out['slenderness']:.1f} "
+            f"< {min_slenderness:.0f}. 예상 각도오차 "
+            f"±{out['angle_uncertainty_deg']:.1f}° 로 측정이 성립하지 않는다. "
+            f"부재가 세로로 더 길게 담기도록 다시 촬영할 것")
     return out
 

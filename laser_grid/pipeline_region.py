@@ -98,6 +98,27 @@ def measure_region(points_3d, cls, g_hat, camera_params,
         out["judge"] = _EQ3.judge_kcs(theta, kcs_cls,
                                       member_length_m=member_length_m,
                                       measured_span_m=ax["length_m"])
+
+        # 세장비에서 오는 각도 불확실도를 판정에 반영한다.
+        # 부재가 짧게만 보이면 원통 단면이 주축을 끌어당겨 각도가 흔들린다.
+        # 측정값만 보고 합격을 내주면 그 흔들림이 판정에 그대로 숨는다.
+        unc = ax.get("angle_uncertainty_deg")
+        if unc is not None:
+            j = out["judge"]
+            j["angle_uncertainty_deg"] = unc
+            j["slenderness"] = ax.get("slenderness")
+            tol = j.get("allow_deg", 0.5)
+            if j.get("is_pass") and abs(theta) + unc > tol:
+                j["is_pass"] = None
+                j["judgement"] = "판정보류(노출길이)"
+                j["note"] = (
+                    f"측정 {theta:.3f}° 는 허용 {tol}° 이내이나, 부재가 "
+                    f"{ax['length_m']*1000:.0f}mm 만 보여(세장비 "
+                    f"{ax['slenderness']:.1f}) 각도 불확실도가 ±{unc:.2f}° 다. "
+                    f"합쳐서 {abs(theta)+unc:.2f}° 로 허용치를 넘을 수 있어 "
+                    f"합격 판정을 내리지 않는다. 부재를 세로로 더 길게 담아 "
+                    f"재촬영할 것")
+
         out["uncertainty"] = _EQ5.region_uncertainty(
             pts, camera_params, normal=None, sigma_u_px=sigma_u_px,
             target_sigma_mm=target_sigma_mm)

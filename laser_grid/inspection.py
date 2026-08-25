@@ -28,22 +28,21 @@ import numpy as np
 # =====================================================================
 # 설정값 (캘리브레이션)
 # =====================================================================
-# 카메라: Daheng MER2-503-36U3C / 렌즈: 12mm F2.0 / 센서: Sony IMX264, 3.45μm
-CAMERA_PARAMS = {
-    "f_px":  1593.0,      # 원본 검증값 (렌더 정상 확인)
-    "b_m":   0.150,       # baseline 150mm (용역서 고정)
-    "cx_px": 1224.0,      # 센서 중앙 W/2
-    "cy_px": 1024.0,      # 센서 중앙 H/2
-    "resolution": [2448, 2048],
-}
-GRID_PARAMS = {
-    # 20칸 × 20칸 격자 = 선 21개 × 21개
-    # (칸 = 선 사이 공간이므로, N칸을 만들려면 선은 N+1개)
-    "n_vertical":       21,     # DOE 수직선 (21선 → 20칸)
-    "n_horizontal":     21,     # DOE 수평선 (21선 → 20칸)
-    "fov_deg":          60.82,  # V선 전체 이미지 안 (50px 마진)
-    "samples_per_line": 250,
-}
+# 캘리브레이션 상수는 calibration.py 가 단일 출처다.
+# 이전에는 inspection.py 와 synth_scene.py 가 같은 값을 따로 들고 있어
+# 한쪽만 고치면 조용히 어긋났다.
+import importlib.util as __ilu, os as __os
+__spec = __ilu.spec_from_file_location(
+    "calibration", __os.path.join(__os.path.dirname(__os.path.abspath(__file__)),
+                                  "calibration.py"))
+CALIB = __ilu.module_from_spec(__spec); __spec.loader.exec_module(CALIB)
+
+# 카메라: 렌즈 12mm F2.0 / 센서 Sony IMX264 3.45µm / 2448×2048  (PDF 2.2)
+#   f_px = 12mm / 3.45µm = 3478.3 px
+CAMERA_PARAMS = dict(CALIB.CAMERA_PARAMS)
+# 격자: 수직 21선 + 수평 21선, DOE 발산각 42.61° (투사 936mm @1.2m)
+GRID_PARAMS = dict(CALIB.GRID_PARAMS)
+
 STATIONS = {
     "StationA_Wall":  {"target": "/World/StationA/WallBackFace",
                        "normal": [0., -1., 0.], "inspect": "verticality",

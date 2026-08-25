@@ -35,8 +35,8 @@ A_선검출.py — [품질검측 알고리즘 A] 20×20 그리드 레이저 선�
 
 【인터페이스】
   camera_params에 추가 필드 필요:
-    "fov_h_deg"  : DOE 수평 전체 발산각 [°]  (예: 60.82)
-    "fov_v_deg"  : DOE 수직 전체 발산각 [°]  (예: 60.82)
+    "fov_h_deg"  : DOE 수평 전체 발산각 [°]  (예: 42.61)
+    "fov_v_deg"  : DOE 수직 전체 발산각 [°]  (예: 42.61)
     "n_v"        : 수직선 수  (예: 20)
     "n_h"        : 수평선 수  (예: 20)
     "standoff_z" : 측정 거리 [mm]  (작업자 입력 또는 ToF 측정값)
@@ -251,7 +251,7 @@ def _local_spacings(lids, line_angles, camera_params, img_dim, axis="V"):
     -------
     {lid: spacing_px}
     """
-    f = camera_params.get("f_px", 1593.0)
+    f = camera_params.get("f_px", 3478.3)
     n = len(lids)
     if n < 2:
         return {lids[0]: img_dim / max(n, 1)} if lids else {}
@@ -260,7 +260,7 @@ def _local_spacings(lids, line_angles, camera_params, img_dim, axis="V"):
     angs = {}
     fixed_key = "alpha" if axis == "V" else "beta"
     fov_deg   = camera_params.get("fov_h_deg" if axis == "V" else "fov_v_deg",
-                                  camera_params.get("fov_h_deg", 60.82))
+                                  camera_params.get("fov_h_deg", 42.61))
     fov = np.radians(fov_deg)
     for idx, lid in enumerate(lids):
         a = line_angles.get(lid, {})
@@ -290,7 +290,7 @@ def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
     기하 원리: u = f · tan(α) + cx
     α = V선의 수평 발산각 (line_angles에서 가져오거나 fov_h에서 등간격 계산)
     """
-    f  = camera_params.get("f_px", 1593.0)
+    f  = camera_params.get("f_px", 3478.3)
     cx = camera_params.get("cx_px", camera_params.get("cx", W_default(camera_params)/2))
 
     # line_angles에 angle_rad가 있으면 우선 사용
@@ -301,7 +301,7 @@ def _geom_u_for_vline(lid, camera_params, H_img, line_angles):
         # fov_h 기반 등간격 계산
         idx   = int(lid[1:])
         n_v   = camera_params.get("n_v", 20)
-        fov_h = np.radians(camera_params.get("fov_h_deg", 60.82))
+        fov_h = np.radians(camera_params.get("fov_h_deg", 42.61))
         alpha = -fov_h/2 + idx * fov_h / max(n_v - 1, 1)
 
     u_pred = f * np.tan(alpha) + cx
@@ -314,7 +314,7 @@ def _geom_v_for_hline(lid, camera_params, W_img, line_angles):
     H선 하나에 대해 각 열(0~W_img-1)에서의 예측 v값 반환.
     기하 원리: v = f · tan(β) + cy
     """
-    f  = camera_params.get("f_px", 1593.0)
+    f  = camera_params.get("f_px", 3478.3)
     cy = camera_params.get("cy_px", camera_params.get("cy", H_default(camera_params)/2))
 
     ang = line_angles.get(lid, {})
@@ -324,7 +324,7 @@ def _geom_v_for_hline(lid, camera_params, W_img, line_angles):
         idx   = int(lid[1:])
         n_h   = camera_params.get("n_h", 20)
         fov_v = np.radians(camera_params.get("fov_v_deg",
-                            camera_params.get("fov_h_deg", 60.82)))
+                            camera_params.get("fov_h_deg", 42.61)))
         beta  = -fov_v/2 + idx * fov_v / max(n_h - 1, 1)
 
     v_pred = f * np.tan(beta) + cy
@@ -619,11 +619,11 @@ def _grid_joint_refine(out, v_lids, h_lids, line_angles, camera_params,
     -------
     n_adjusted : int  보정된 교차점 수
     """
-    f  = camera_params.get("f_px", 1593.0)
+    f  = camera_params.get("f_px", 3478.3)
     cx = camera_params.get("cx_px", W_img / 2.0)
     cy = camera_params.get("cy_px", H_img / 2.0)
-    fov_h = np.radians(camera_params.get("fov_h_deg", 60.82))
-    fov_v = np.radians(camera_params.get("fov_v_deg", 60.82))
+    fov_h = np.radians(camera_params.get("fov_h_deg", 42.61))
+    fov_v = np.radians(camera_params.get("fov_v_deg", 42.61))
     n_v, n_h = len(v_lids), len(h_lids)
 
     def _theory(idx, n, fov, c):
