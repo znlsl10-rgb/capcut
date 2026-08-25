@@ -52,6 +52,12 @@ def _load(name):
 
 CALIB = _load("calibration")
 PIPE = _load("pipeline_region")
+DETECT = _load("A_선검출")
+
+# 검출선과 정답선을 같은 선으로 볼 최대 거리 [px].
+# 이 사양의 격자 간격은 화면에서 45~55px 이므로, 5px 이면 이웃 선과
+# 혼동될 여지 없이 "찾았다/못 찾았다" 를 가른다.
+MATCH_TOL_PX = 5.0
 REPORT = _load("report")
 XLS = _load("report_excel")
 
@@ -168,39 +174,287 @@ def load_folder(path, world_up=(0.0, 0.0, 1.0), stride=1):
             "grid": cp_raw.get("grid"), "sensor": [SW, SH],
             "screenshot": [sw, sh]}
     return {"lines_pixels": lines_pixels, "line_angles": line_angles,
-            "camera_params": camera_params, "g_hat": g_hat,
+            "camera_params": camera_params, "g_hat": g_hat, "R_cam": R,
             "diag": diag, "meta": meta, "raw": cp_raw, "cast": cast}
 
 
-def _base_image(path, size, flipped=False):
+# =====================================================================
+# 선검출 정확도 — 화소 단계가 맞아야 3D 가 맞는다
+# =====================================================================
+def _flip_about_principal(im, cx, cy, resample=None):
     """
-    CAM.png 를 센서 크기로 늘려 결과 이미지 배경으로 쓴다.
+    주점 (cx, cy) 를 중심으로 이미지를 180° 돌린다.
 
-    내보내기가 180° 돌아 있던 캡처는 화소 좌표를 되돌려 놓았으므로
-    배경 그림도 같이 돌려야 한다. 그러지 않으면 검출점이 원본 격자에서
-    좌우로 밀린 채 그려져, 결과가 틀린 것처럼 보인다.
+    PIL 의 ROTATE_180 은 u → (w−1) − u 로 **이미지 중심** 기준이다.
+    화소 좌표는 주점 기준으로 2·c − u 로 되돌리므로, 주점이 이미지
+    중심과 다르면 그만큼 어긋난다. 이 표본에서는 폭 1269, 주점 634.5 라
+    정확히 1px 차이가 났고, 그것이 벽체 캡처의 u 오차 중앙값 −0.96px 로
+    그대로 나타났다. 센서 환산 1px 은 1.5m 에서 깊이 10mm 다.
     """
-    for name in ("CAM.png", "CAST.png"):
+    from PIL import Image
+    if resample is None:
+        resample = Image.BICUBIC
+    # AFFINE 은 출력(x,y) → 입력(ax+by+c, dx+ey+f) 로 역방향 사상이다.
+    return im.transform(im.size, Image.AFFINE,
+                        (-1, 0, 2.0 * cx, 0, -1, 2.0 * cy), resample=resample)
+
+
+def evaluate_line_detection(path, cap, image_name="CAST.png"):
+    """
+    렌더 이미지에 A_선검출 을 돌려 raycast 정답 화소와 대조한다.
+
+    왜 재야 하는가
+    -------------
+    삼각측량은 Z = f·b / (f·tanα − (u − c_x)) 다. 분모가 화소 차이라,
+    u 가 흔들린 만큼 그대로 깊이가 흔들린다. 민감도는
+
+        dZ = Z² / (f·b) · du
+
+    이고 이 장비의 legacy 사양(f=1593px, b=150mm)에서는 2.7m 거리에서
+    1px 이 12mm 다. 즉 뒤쪽 검측식이 아무리 정확해도 화소 단계에서
+    1px 이 틀리면 그 자리에서 끝난다.
+
+    무엇과 대조하나
+    --------------
+    이 내보내기에는 cast_pixels.json 에 raycast 로 구한 정답 화소가 들어
+    있다. 같은 장면의 렌더 이미지(CAST.png)에 선검출을 돌리면 검출값과
+    정답을 직접 뺄 수 있다. 검측 파이프라인은 정답 화소를 그대로 썼으므로
+    이 비교가 곧 "실장비에서 무엇이 더 나빠지는가" 를 보여준다.
+
+    비교 방법
+    --------
+    V선은 행(v)을 따라가며 u 를 본다. 정답과 검출의 샘플 밀도가 다르므로
+    인덱스로 맞추지 않고, 정답을 검출점의 v 위치에 선형보간해 재추출한 뒤
+    같은 v 에서 u 차이를 잰다.
+    """
+    cast = cap["cast"]
+    cp_raw = cap["raw"]
+    fp = os.path.join(path, image_name)
+    if not os.path.exists(fp):
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    im = Image.open(fp).convert("RGB")
+    w, h = im.size
+    SW, SH = cp_raw["sensor_size"]
+    su, sv = SW / float(w), SH / float(h)
+    f_img = float(cp_raw["camera"]["f_px"]) / su
+    cx_img = float(cp_raw["camera"]["cx_px"]) / su
+    cy_img = float(cp_raw["camera"]["cy_px"]) / sv
+    flipped = bool(cap["diag"]["uv 180° 뒤집힘"])
+    if flipped:
+        im = _flip_about_principal(im, cx_img, cy_img)
+    img = np.asarray(im)
+    b = float(cp_raw["baseline_m"])
+    grid = cp_raw.get("grid") or {}
+    z_ref = _median_depth(cap)
+
+    cp = {"f_px": f_img, "b_m": b, "cx_px": cx_img, "cy_px": cy_img,
+          "resolution": [w, h], "image_w": w, "image_h": h,
+          "n_v": grid.get("n_vertical", 21), "n_h": grid.get("n_horizontal", 21),
+          "fov_h_deg": grid.get("fov_deg"), "fov_v_deg": grid.get("fov_deg"),
+          "standoff_z": z_ref}
+    line_angles = {lid: {"fixed": ln["fixed"],
+                         "angle_rad": float(np.radians(ln["angle_deg"]))}
+                   for lid, ln in cast.items()}
+    try:
+        det = DETECT.detect(img, {}, line_angles, cp, multi_surface=True)
+    except Exception as e:
+        return {"error": f"선검출 실패: {e}"}
+
+    # ── 검출선 ↔ 정답선을 **위치로** 짝짓는다 ──
+    # ID 로 짝지으면 안 된다. 이 내보내기는 H선 번호가 코드와 반대로
+    # 매겨져 있어(정답 H0 이 화면 아래, 코드 H0 이 화면 위) ID 로 빼면
+    # 970px 짜리 오차가 나온다. 실제로 알고 싶은 것은 "선을 찾았는가,
+    # 얼마나 정확한가" 이므로 위치로 짝짓고, 번호가 맞는지는 따로 센다.
+    def _key(arr, fixed):
+        return float(np.median(arr[:, 0 if fixed == "alpha" else 1]))
+
+    det_info = {}
+    for lid, pts in det.items():
+        d = np.array(pts, float)
+        if len(d) >= 3:
+            det_info[lid] = (d, _key(d, "alpha" if lid.startswith("V") else "beta"))
+
+    rows, all_err = [], []
+    n_id_ok = {"V": 0, "H": 0}
+    n_id_tot = {"V": 0, "H": 0}
+    for lid, ln in sorted(cast.items(),
+                          key=lambda kv: (kv[0][0], int(kv[0][1:]))):
+        gt = np.array([[p["uv"][0], p["uv"][1]] for p in ln["points"]], float)
+        if flipped:
+            gt = np.stack([2 * cx_img - gt[:, 0], 2 * cy_img - gt[:, 1]], axis=1)
+        z_line = float(np.median([_depth_of(p, cap) for p in ln["points"][::200]]))
+        axis = lid[0]
+        n_id_tot[axis] += 1
+        g_key = _key(gt, ln["fixed"])
+
+        # 같은 방향의 검출선 중 가장 가까운 것
+        cand = [(abs(k - g_key), l, d) for l, (d, k) in det_info.items()
+                if l[0] == axis]
+        row = {"lid": lid, "fixed": ln["fixed"], "n_gt": len(gt),
+               "z_m": round(z_line, 3), "gt_pos": round(g_key, 1)}
+        if not cand:
+            row.update(n_det=0, matched=None, err_med=None, err_rms=None,
+                       err_p95=None, err_max=None, id_ok=False,
+                       note="검출선 없음")
+            rows.append(row); continue
+        gap, mlid, d = min(cand, key=lambda t: t[0])
+        row["matched"] = mlid
+        row["match_gap_px"] = round(gap, 2)
+        row["id_ok"] = (mlid == lid)
+        if row["id_ok"]:
+            n_id_ok[axis] += 1
+        if gap > MATCH_TOL_PX:
+            row.update(n_det=0, err_med=None, err_rms=None, err_p95=None,
+                       err_max=None,
+                       note=f"미검출 — 가장 가까운 검출선이 {gap:.1f}px 떨어져 있음")
+            rows.append(row); continue
+
+        row["n_det"] = len(d)
+        if ln["fixed"] == "alpha":          # V선: v 를 따라가며 u 오차
+            o = np.argsort(gt[:, 1])
+            ref = np.interp(d[:, 1], gt[o, 1], gt[o, 0])
+            e = d[:, 0] - ref
+        else:                                # H선: u 를 따라가며 v 오차
+            o = np.argsort(gt[:, 0])
+            ref = np.interp(d[:, 0], gt[o, 0], gt[o, 1])
+            e = d[:, 1] - ref
+        # 계통 편차와 무작위 오차를 갈라 놓는다. 둘은 성질도 대책도 다르다.
+        #   계통(중앙값) — 좌표 규약·주점·기선 같은 것이 어긋난 것. 소프트웨어로 고친다.
+        #   무작위(중앙값 둘레 표준편차) — 이것이 진짜 검출 정밀도 σ_u 다.
+        row.update(err_med=float(np.median(e)),
+                   err_noise=float(np.std(e - np.median(e))),
+                   err_rms=float(np.sqrt(np.mean(e ** 2))),
+                   err_p95=float(np.percentile(np.abs(e), 95)),
+                   err_max=float(np.abs(e).max()), note=None)
+        rows.append(row)
+        if ln["fixed"] == "alpha":
+            all_err.append(e)
+
+    E = np.concatenate(all_err) if all_err else np.zeros(0)
+    v_rows = [r for r in rows if r["fixed"] == "alpha"]
+    ok = [r for r in v_rows if r["err_rms"] is not None]
+    missed = [r for r in v_rows if r["err_rms"] is None]
+
+    # 화소 오차를 깊이 오차로 환산 — 이 숫자가 최종 정확도를 좌우한다.
+    #   dZ = Z²/(f·b) · du       (센서 화소 기준)
+    f_sensor = float(cp_raw["camera"]["f_px"])
+    bias = float(np.median(E)) if len(E) else None
+    noise = float(np.std(E - np.median(E))) if len(E) else None
+    rms_sensor = (float(np.sqrt(np.mean(E ** 2))) * su) if len(E) else None
+    to_mm = (lambda px: z_ref ** 2 / (f_sensor * b) * (px * su) * 1000.0)
+    dz_mm = to_mm(float(np.sqrt(np.mean(E ** 2)))) if len(E) else None
+    return {
+        "image": image_name, "image_size": [w, h], "flipped": flipped,
+        "scale_to_sensor": round(su, 4),
+        "f_px_image": round(f_img, 1), "f_px_sensor": f_sensor,
+        "z_ref_m": round(z_ref, 3),
+        "n_lines_gt": len(cast), "n_lines_det": len(det),
+        "rows": rows,
+        "err_med_px": (round(float(np.median(E)), 4) if len(E) else None),
+        "err_rms_px": (round(float(np.sqrt(np.mean(E ** 2))), 4) if len(E) else None),
+        "err_p95_px": (round(float(np.percentile(np.abs(E), 95)), 3) if len(E) else None),
+        "err_bias_px": (round(bias, 4) if bias is not None else None),
+        "err_noise_px": (round(noise, 4) if noise is not None else None),
+        "err_rms_sensor_px": (round(rms_sensor, 4) if rms_sensor is not None else None),
+        "bias_sensor_px": (round(bias * su, 4) if bias is not None else None),
+        "noise_sensor_px": (round(noise * su, 4) if noise is not None else None),
+        "depth_err_mm": (round(dz_mm, 3) if dz_mm is not None else None),
+        "depth_bias_mm": (round(to_mm(abs(bias)), 3) if bias is not None else None),
+        "depth_noise_mm": (round(to_mm(noise), 3) if noise is not None else None),
+        "mm_per_px_depth": round(z_ref ** 2 / (f_sensor * b) * su * 1000.0, 3),
+        "n_v_matched": len(ok), "n_v_total": len(v_rows),
+        "n_v_missed": len(missed),
+        "missed_lines": [r["lid"] for r in missed],
+        "id_ok": {k: (n_id_ok[k], n_id_tot[k]) for k in ("V", "H")},
+        "sigma_u_design_px": CALIB.SIGMA_U_PX,
+    }
+
+
+def _depth_of(point, cap):
+    """raycast 점의 조사기 좌표 Z."""
+    rt = cap["raw"]["rig_transform"]
+    L = np.array(rt["laser_pos_world"], float)
+    R = cap["R_cam"]
+    return float((np.array(point["xyz_world"], float) - L) @ R[:, 2])
+
+
+def _median_depth(cap):
+    """장면 대표 거리 — 선검출 예측 밴드의 시차항에 쓰인다."""
+    zs = []
+    for lid, ln in cap["cast"].items():
+        if ln["fixed"] != "alpha":
+            continue
+        zs.append(_depth_of(ln["points"][len(ln["points"]) // 2], cap))
+    return float(np.median(zs)) if zs else 1.2
+
+
+def _base_image(path, size, flipped=False, cx_img=None, cy_img=None):
+    """
+    결과 이미지의 배경을 만든다 — 장면 사진 + **실제** 레이저선.
+
+    이 내보내기에는 그림이 둘 있고 격자가 서로 다르다.
+
+      CAM.png    장면 사진 위에 격자를 얹은 것. 그런데 그 격자는 화면을
+                 등간격으로 나눠 그린 것이다(실측 간격 47.2~48.1px,
+                 최대/최소 1.023).
+      CAST.png   레이저만 렌더한 것. 간격이 44~57px 로 바깥이 넓다
+                 (최대/최소 1.296). u = f·tan α 를 그대로 따르며
+                 cast_pixels.json 의 정답 화소와 0.5px 안에서 일치한다.
+
+    삼각측량이 쓰는 것은 발사각이므로 물리적으로 맞는 쪽은 CAST 다.
+    CAM 의 격자를 배경으로 깔면 검출점이 그 위에 얹히지 않는데, 이는
+    검출이 틀려서가 아니라 배경 격자가 발사각을 반영하지 않아서다.
+
+    그래서 CAM 에서 격자만 지우고(초록 과잉 화소의 G 를 R·B 평균으로
+    되돌린다) 그 자리에 CAST 의 실제 레이저를 얹는다. 장면은 그대로
+    보이면서 검출점이 실제 레이저 위에 놓인다.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    def _load_png(name):
         fp = os.path.join(path, name)
         if not os.path.exists(fp):
-            continue
-        try:
-            from PIL import Image
-            im = Image.open(fp).convert("RGB")
-            if flipped:
-                im = im.transpose(Image.ROTATE_180)
-            im = im.resize((size[0], size[1]), Image.BICUBIC)
-            return np.asarray(im)
-        except Exception:
             return None
-    return None
+        im = Image.open(fp).convert("RGB")
+        if flipped:
+            cx = cx_img if cx_img is not None else im.size[0] / 2.0
+            cy = cy_img if cy_img is not None else im.size[1] / 2.0
+            im = _flip_about_principal(im, cx, cy)
+        return np.asarray(im.resize((size[0], size[1]), Image.BICUBIC), float)
+
+    scene = _load_png("CAM.png")
+    laser = _load_png("CAST.png")
+    if scene is None:
+        return None if laser is None else laser.astype(np.uint8)
+
+    # CAM 의 등간격 격자 제거 — 초록 과잉분만 눌러 표면색을 되살린다
+    rb = 0.5 * (scene[:, :, 0] + scene[:, :, 2])
+    over = scene[:, :, 1] - rb
+    m = over > 25
+    scene[m, 1] = rb[m]
+
+    if laser is not None:
+        # CAST 의 실제 레이저를 초록으로 얹는다
+        lg = laser[:, :, 1] - 0.5 * (laser[:, :, 0] + laser[:, :, 2])
+        a = np.clip(lg / 180.0, 0.0, 1.0)[:, :, None]
+        tint = np.array([70.0, 245.0, 110.0])
+        scene = scene * (1 - a) + tint * a
+    return np.clip(scene, 0, 255).astype(np.uint8)
 
 
 # =====================================================================
 # 검측 실행
 # =====================================================================
 def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
-                   sigma_u_px=None):
+                   sigma_u_px=None, eval_detection=True):
     name = os.path.basename(os.path.normpath(path))
     cap = load_folder(path, stride=stride)
     cp = cap["camera_params"]
@@ -229,13 +483,37 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
     os.makedirs(out_dir, exist_ok=True)
 
     su = CALIB.SIGMA_U_PX if sigma_u_px is None else float(sigma_u_px)
+    # ── 선검출 정확도 ──
+    # 검측 파이프라인은 정답 화소를 그대로 썼다. 실장비는 이미지에서
+    # 화소를 찾아내야 하므로, 그 단계가 얼마나 정확한지 따로 잰다.
+    # 화소 1px 이 깊이 몇 mm 인지까지 환산해 조서에 남긴다.
+    det_eval = None
+    if eval_detection:
+        try:
+            det_eval = evaluate_line_detection(path, cap)
+        except Exception as e:
+            det_eval = {"error": f"평가 실패: {e}"}
+        if det_eval and not det_eval.get("error"):
+            print(f"\n  선검출 대조 ({det_eval['image']}) — 정답 화소 기준")
+            print(f"    V선 검출        {det_eval['n_v_matched']}/{det_eval['n_v_total']}"
+                  + (f"   미검출 {det_eval['missed_lines']}"
+                     if det_eval["missed_lines"] else ""))
+            print(f"    계통 편차        {det_eval['err_bias_px']:+.3f} px  "
+                  f"→ 깊이 {det_eval['depth_bias_mm']:.1f} mm")
+            print(f"    무작위 오차 σ_u   {det_eval['err_noise_px']:.3f} px  "
+                  f"→ 깊이 {det_eval['depth_noise_mm']:.1f} mm  "
+                  f"(설계 가정 {det_eval['sigma_u_design_px']} px)")
+
     res = PIPE.inspect_image(lines_uv, lines_xyz, cp, cap["g_hat"],
                              seg_backend=backend, sigma_u_px=su)
     print()
     print(PIPE.format_report(res))
 
+    sc_u = cp["resolution"][0] / float(cap["meta"]["screenshot"][0])
+    sc_v = cp["resolution"][1] / float(cap["meta"]["screenshot"][1])
     base = _base_image(path, cp["resolution"],
-                       flipped=bool(cap["diag"]["uv 180° 뒤집힘"]))
+                       flipped=bool(cap["diag"]["uv 180° 뒤집힘"]),
+                       cx_img=cp["cx_px"] / sc_u, cy_img=cp["cy_px"] / sc_v)
     seg = REPORT.save_segmentation(os.path.join(out_dir, f"{name}_세그멘테이션.png"),
                                    res, base_image=base,
                                    shape=(cp["resolution"][1], cp["resolution"][0]))
@@ -256,8 +534,21 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
     if backend == "geom":
         caveats.append("기하 전용 백엔드는 동바리/기둥/철근과 벽/거푸집/조적을 "
                        "구분하지 못한다. 부재 종류는 사람이 확인해야 한다.")
+    if det_eval and not det_eval.get("error"):
+        if det_eval["missed_lines"]:
+            caveats.append(
+                f"선검출이 {len(det_eval['missed_lines'])}개 선을 놓쳤다"
+                f"({', '.join(det_eval['missed_lines'])}). 이 표본에서는 앞에 선"
+                f" 부재 위에 떨어진 선들이며, 예측 밴드를 장면 대표거리 하나로"
+                f" 잡는 한 다른 깊이의 면에 걸린 선은 놓치기 쉽다.")
+        if abs(det_eval["err_bias_px"]) > 0.3:
+            caveats.append(
+                f"선검출에 {det_eval['err_bias_px']:+.2f}px 의 계통 편차가 있다"
+                f"(깊이 {det_eval['depth_bias_mm']:.1f}mm). 무작위 오차가 아니라"
+                f" 좌표 규약이 어긋난 것이므로 원인을 찾아 제거해야 한다.")
     xl = XLS.save_excel(os.path.join(out_dir, f"{name}_품질검측조서.xlsx"), res,
-                        meta=meta, seg_image_path=seg, extra_caveats=caveats)
+                        meta=meta, seg_image_path=seg, extra_caveats=caveats,
+                        detection=det_eval)
     print()
     print(f"  세그멘테이션 이미지: {seg}")
     print(f"  엑셀 조서:          {xl}")
@@ -285,6 +576,8 @@ def main():
     ap.add_argument("--site", default=None)
     ap.add_argument("--sigma-u", type=float, default=None,
                     help="선검출 픽셀오차 가정 [px]. 기본은 프로파일 값")
+    ap.add_argument("--no-detect-eval", action="store_true",
+                    help="선검출 정확도 대조를 건너뛴다 (느릴 때)")
     ap.add_argument("--profile", default=None)
     a = ap.parse_args()
     if a.profile:
@@ -301,7 +594,8 @@ def main():
         out = (os.path.join(a.out, os.path.basename(os.path.normpath(t)))
                if a.out else None)
         inspect_folder(t, out_dir=out, backend=a.backend,
-                       stride=a.stride, site=a.site, sigma_u_px=a.sigma_u)
+                       stride=a.stride, site=a.site, sigma_u_px=a.sigma_u,
+                       eval_detection=not a.no_detect_eval)
         print()
     return 0
 

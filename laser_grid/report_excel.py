@@ -196,10 +196,96 @@ def _sheet_design(wb, openpyxl):
     return ws
 
 
+def _sheet_detection(wb, openpyxl, det):
+    """
+    선검출 정확도 — 화소가 맞아야 3D 가 맞는다.
+
+    삼각측량은 Z = f·b/(f·tanα − (u−c_x)) 라 분모가 화소 차이다. 화소가
+    1px 흔들리면 깊이가 Z²/(f·b) 만큼 흔들린다. 뒤쪽 검측식이 아무리
+    정확해도 여기서 끝난다. 그래서 조서에 넣는다.
+    """
+    ws = wb.create_sheet("3.선검출정확도")
+    from openpyxl.styles import PatternFill, Font
+    if not det:
+        ws.append(["선검출 정확도", "평가하지 않음"])
+        ws.append(["", "정답 화소가 있는 내보내기(raycast) 입력에서만 잴 수 있다. "
+                       "실촬영에는 대조할 정답이 없다."])
+        _style(ws, openpyxl, widths=[22, 100])
+        return ws
+    if det.get("error"):
+        ws.append(["선검출 정확도", det["error"]])
+        _style(ws, openpyxl, widths=[22, 100])
+        return ws
+
+    mm = det.get("mm_per_px_depth")
+    ws.append(["항목", "값", "깊이 환산", "비고"])
+    rows = [
+        ("대조 이미지", det["image"], "",
+         f"{det['image_size'][0]}×{det['image_size'][1]} "
+         f"(센서 {det['f_px_sensor']:.0f}px 기준 배율 {det['scale_to_sensor']})"),
+        ("대표 측정거리", f"{det['z_ref_m']} m", "",
+         f"화소 1px 이 깊이 {mm} mm 에 해당"),
+        ("", "", "", ""),
+        ("V선 검출", f"{det['n_v_matched']} / {det['n_v_total']}", "",
+         ("미검출: " + ", ".join(det["missed_lines"]))
+         if det["missed_lines"] else "전부 검출"),
+        ("V선 번호 일치", f"{det['id_ok']['V'][0]} / {det['id_ok']['V'][1]}", "",
+         "선 번호가 발사각 α 를 정한다 — 틀리면 깊이가 통째로 어긋난다"),
+        ("H선 번호 일치", f"{det['id_ok']['H'][0]} / {det['id_ok']['H'][1]}", "",
+         "H선은 삼각측량에 쓰지 않으므로 측정에는 영향 없음"),
+        ("", "", "", ""),
+        ("계통 편차 (중앙값)", f"{det['err_bias_px']:+.3f} px",
+         f"{det['depth_bias_mm']:.1f} mm",
+         "좌표 규약·주점·기선이 어긋난 몫. 소프트웨어로 제거할 수 있다"),
+        ("무작위 오차 (σ)", f"{det['err_noise_px']:.3f} px",
+         f"{det['depth_noise_mm']:.1f} mm",
+         f"이것이 실제 검출 정밀도 σ_u 다. 설계 가정은 "
+         f"{det['sigma_u_design_px']} px"),
+        ("전체 RMS", f"{det['err_rms_px']:.3f} px",
+         f"{det['depth_err_mm']:.1f} mm", "계통 + 무작위"),
+        ("95 백분위", f"{det['err_p95_px']:.3f} px", "", ""),
+    ]
+    for r in rows:
+        ws.append(list(r))
+    _style(ws, openpyxl, widths=[20, 16, 13, 62])
+
+    # 설계 가정과의 비교를 색으로
+    sig = det["sigma_u_design_px"]
+    c = ws.cell(row=10, column=2)
+    bad = det["err_noise_px"] > sig * 1.5
+    c.fill = PatternFill("solid", fgColor="FEE2E2" if bad else "DCFCE7")
+    c.font = Font(bold=True, color="991B1B" if bad else "166534", size=10)
+
+    ws.append([])
+    ws.append(["선별 상세", "", "", ""])
+    hdr = ws.max_row + 1
+    ws.append(["선", "방향", "거리(m)", "정답 위치(px)", "검출 대응",
+               "정답 점수", "검출 점수", "계통(px)", "σ(px)", "RMS(px)",
+               "최대(px)", "비고"])
+    for r in det["rows"]:
+        ws.append([
+            r["lid"], "수직" if r["fixed"] == "alpha" else "수평",
+            r["z_m"], r.get("gt_pos"), r.get("matched"),
+            r["n_gt"], r.get("n_det"),
+            (round(r["err_med"], 3) if r.get("err_med") is not None else None),
+            (round(r["err_noise"], 3) if r.get("err_noise") is not None else None),
+            (round(r["err_rms"], 3) if r.get("err_rms") is not None else None),
+            (round(r["err_max"], 2) if r.get("err_max") is not None else None),
+            r.get("note") or ("번호 불일치" if not r.get("id_ok") else "")])
+        if r.get("err_rms") is None:
+            for col in range(1, 13):
+                ws.cell(row=ws.max_row, column=col).fill = PatternFill(
+                    "solid", fgColor="FEE2E2")
+    _style(ws, openpyxl,
+           widths=[6, 6, 9, 13, 11, 10, 10, 10, 9, 10, 10, 40],
+           header_row=hdr)
+    return ws
+
+
 def _sheet_segmentation(wb, openpyxl, result, record, label_pixels=None,
                         seg_image_path=None):
     """색깔별로 무엇을 무엇으로 구분했는지."""
-    ws = wb.create_sheet("3.세그멘테이션")
+    ws = wb.create_sheet("4.세그멘테이션")
     ws.append(["색", "클래스(코드)", "부재", "영역 수", "격자점 수",
                "화소 수", "검측 항목", "적용 기준(KCS)"])
     from openpyxl.styles import PatternFill
@@ -254,7 +340,7 @@ def _sheet_segmentation(wb, openpyxl, result, record, label_pixels=None,
 
 def _sheet_results(wb, openpyxl, record):
     """구분별 품질검측 결과 — 이 조서의 본문."""
-    ws = wb.create_sheet("4.검측결과")
+    ws = wb.create_sheet("5.검측결과")
     ws.append(["No", "부재", "검측 항목", "측정 각도(°)", "허용",
                "편차(mm)", "자세 판정",
                "직선자(m)", "처짐(mm)", "처짐 상한(mm)", "허용(mm)",
@@ -296,7 +382,7 @@ def _sheet_results(wb, openpyxl, record):
 
 def _sheet_flatness(wb, openpyxl, result):
     """KCS 직선자 길이별 상세. 3m 와 1m 는 허용치가 다르다."""
-    ws = wb.create_sheet("5.평활도상세")
+    ws = wb.create_sheet("6.평활도상세")
     ws.append(["No", "부재", "직선자 길이(m)", "실제 측정 구간(m)",
                "처짐(mm)", "처짐 상한(mm)", "허용(mm)", "허용 대비",
                "판정", "비고"])
@@ -328,7 +414,7 @@ def _sheet_flatness(wb, openpyxl, result):
 
 def _sheet_defects(wb, openpyxl, result, seg_image_path=None):
     """검출된 요철이 화면 어디에 있는가."""
-    ws = wb.create_sheet("6.요철위치")
+    ws = wb.create_sheet("7.요철위치")
     ws.append(["No", "부재", "요철", "깊이(mm)", "크기(mm)",
                "화면 중심 u,v (px)", "화면 범위 u1,v1–u2,v2 (px)",
                "측정거리(m)", "구성 점수"])
@@ -367,7 +453,7 @@ def _sheet_defects(wb, openpyxl, result, seg_image_path=None):
 
 
 def _sheet_caveats(wb, openpyxl, record, extra=None):
-    ws = wb.create_sheet("7.유의사항")
+    ws = wb.create_sheet("8.유의사항")
     ws.append(["구분", "내용"])
     for c in record.get("caveats", []):
         ws.append(["측정", c])
@@ -387,7 +473,7 @@ def _sheet_caveats(wb, openpyxl, record, extra=None):
 # 진입점
 # =====================================================================
 def save_excel(path, result, meta=None, label_pixels=None,
-               extra_caveats=None, seg_image_path=None):
+               extra_caveats=None, seg_image_path=None, detection=None):
     """
     검측 결과를 엑셀 조서로 저장한다.
 
@@ -396,13 +482,15 @@ def save_excel(path, result, meta=None, label_pixels=None,
     result       : pipeline_region.inspect_image / inspect_capture 결과
     meta         : dict — 입력 이미지, 촬영 조건 등 (요약 시트 상단)
     label_pixels : {class: 화소수} — 세그멘테이션 마스크 면적 (선택)
-    seg_image_path : 세그멘테이션 결과 이미지 경로 — 3번 시트에 삽입
+    seg_image_path : 세그멘테이션 결과 이미지 경로 — 4번 시트에 삽입
+    detection    : load_capture.evaluate_line_detection 결과 (선택)
     """
     import openpyxl
     record = REPORT.build_record(result, meta)
     wb = openpyxl.Workbook()
     _sheet_summary(wb, openpyxl, record, dict(meta or {}), result)
     _sheet_design(wb, openpyxl)
+    _sheet_detection(wb, openpyxl, detection)
     _sheet_segmentation(wb, openpyxl, result, record, label_pixels,
                         seg_image_path)
     _sheet_results(wb, openpyxl, record)
