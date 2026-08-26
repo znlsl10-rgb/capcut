@@ -786,7 +786,6 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
     out_dir = out_dir or os.path.join(path, "_검측결과")
     os.makedirs(out_dir, exist_ok=True)
 
-    su = CALIB.SIGMA_U_PX if sigma_u_px is None else float(sigma_u_px)
     # ── 선검출 정확도 ──
     # 검측 파이프라인은 정답 화소를 그대로 썼다. 실장비는 이미지에서
     # 화소를 찾아내야 하므로, 그 단계가 얼마나 정확한지 따로 잰다.
@@ -807,6 +806,20 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
             print(f"    무작위 오차 σ_u   {det_eval['err_noise_px']:.3f} px  "
                   f"→ 깊이 {det_eval['depth_noise_mm']:.1f} mm  "
                   f"(설계 가정 {det_eval['sigma_u_design_px']} px)")
+
+    # 불확실도에 **측정한** 선검출 오차를 넣는다.
+    # 설계 가정 0.2px 를 그대로 쓰면, 실제 검출이 그보다 나쁠 때 평활도를
+    # "합격" 으로 내주게 된다. 판정의 근거가 되는 σ 는 가정이 아니라
+    # 이 촬영에서 실제로 잰 값이어야 한다.
+    su = CALIB.SIGMA_U_PX if sigma_u_px is None else float(sigma_u_px)
+    su_src = "지정값" if sigma_u_px is not None else "설계 가정"
+    if sigma_u_px is None and det_eval and not det_eval.get("error"):
+        m = det_eval.get("err_noise_px")
+        if m:
+            su = float(m) * det_eval["scale_to_sensor"]
+            su_src = "이 촬영에서 실측"
+            print(f"    → 불확실도 σ_u 에 실측 {su:.3f}px 사용 "
+                  f"(설계 가정 {CALIB.SIGMA_U_PX}px)")
 
     res = PIPE.inspect_image(lines_uv, lines_xyz, cp, cap["g_hat"],
                              seg_backend=backend, sigma_u_px=su)
@@ -829,6 +842,7 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
             "케이스": cap["meta"].get("case"),
             "촬영 시각": cap["meta"].get("captured_at")}
     meta.update({k: str(v) for k, v in cap["diag"].items()})
+    meta["불확실도 σ_u (px)"] = f"{su:.3f}  ({su_src})"
     caveats = [
         "실촬영이 아니라 Isaac raycast 내보내기다. 선검출(A_선검출) 단계를 "
         "거치지 않았으므로 검출 오차는 0 이고, 검측식·영역분할만 검증된다.",

@@ -561,6 +561,7 @@ def _trace_line(intensity_map, table, center_fallback,
     raw_pts    = []
     center     = center_fallback
     miss_count = 0
+    lit_w = []          # 행마다 켜진 폭 — 교점 행을 걸러내는 데 쓴다
 
     n_steps = H_img if axis == "V" else W_img
     scan_lo, scan_hi = scan_range if scan_range else (0, n_steps - 1)
@@ -628,6 +629,8 @@ def _trace_line(intensity_map, table, center_fallback,
             miss_count += 1; continue
 
         idx = np.arange(lo, hi, dtype=float)
+        # 이 행에서 켜진 폭 — 교점 판별에 쓴다
+        lit = int((seg > (seg_bg + (seg_max - seg_bg) * 0.5)).sum())
         # 배경 뺀 대칭 창 무게중심이 주 추정. 창을 못 잡거나 신호가 약하면
         # Steger 로 넘긴다.
         sub = _ridge_centroid_subpixel(seg, lo, seg_bg, pred, band,
@@ -639,6 +642,7 @@ def _trace_line(intensity_map, table, center_fallback,
             raw_pts.append([sub, float(i)])
         else:
             raw_pts.append([float(i), sub])
+        lit_w.append(lit)
 
         if table is None:
             center = center * (1 - TRACK_GAIN) + sub * TRACK_GAIN
@@ -649,6 +653,20 @@ def _trace_line(intensity_map, table, center_fallback,
 
     if len(raw_pts) < 5:
         return raw_pts
+
+    # ── 교점 행 제거 ──
+    # V선과 H선이 만나는 곳에서는 두 선이 한 덩어리로 붙어 프로파일이
+    # 훨씬 넓어진다. 그 행의 무게중심은 수직선 중심이 아니라 두 선이
+    # 합쳐진 덩어리의 중심이라, 실측하면 오차가 최대 3.5px(깊이 35mm)에
+    # 이른다. 전체의 0.4% 뿐인데 σ 의 18% 를 만든다.
+    #
+    # 폭 문턱은 그 선 자신의 중앙 폭에서 잡는다. 기울어진 선은 한 행에
+    # 걸치는 폭이 원래 넓으므로 고정값을 쓰면 정상 행까지 버린다.
+    if len(lit_w) == len(raw_pts) and len(lit_w) >= 20:
+        wmed = float(np.median(lit_w))
+        keep = np.asarray(lit_w) <= max(wmed * 2.0, wmed + 2.0)
+        if keep.sum() >= max(10, int(0.5 * len(raw_pts))):
+            raw_pts = [p for p, k in zip(raw_pts, keep) if k]
 
     coord_idx = 0 if axis == "V" else 1
     # 다중면 모드에서는 면 경계의 진짜 꺾임을 이상치로 지우지 않도록
