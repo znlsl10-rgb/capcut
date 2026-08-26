@@ -31,8 +31,3 @@ media/
 
 # Whisper 모델 캐시
 models/
-
-# laser_grid 데모 산출물
-laser_grid/_report_demo/
-laser_grid/*.usda
-laser_grid/*.png
