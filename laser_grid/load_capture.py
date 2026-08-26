@@ -365,6 +365,12 @@ def evaluate_line_detection(path, cap, image_name="CAST.png"):
         # 계통 편차와 무작위 오차를 갈라 놓는다. 둘은 성질도 대책도 다르다.
         #   계통(중앙값) — 좌표 규약·주점·기선 같은 것이 어긋난 것. 소프트웨어로 고친다.
         #   무작위(중앙값 둘레 표준편차) — 이것이 진짜 검출 정밀도 σ_u 다.
+        # 화소 오차를 그대로 삼각측량에 넣어 **실제 깊이 차이**도 잰다.
+        # 환산식(dZ = Z²/(f·b)·du)은 선형 근사이고, 무엇보다 "화소 0.3px"
+        # 이라는 숫자만으로는 얼마나 나쁜지 感이 오지 않는다.
+        if ln["fixed"] == "alpha":
+            dz = _depth_diff_mm(d, gt, lid, cap, cp_raw, su, flipped)
+            row.update(dz_med_mm=dz[0], dz_noise_mm=dz[1], dz_p95_mm=dz[2])
         row.update(err_med=float(np.median(e)),
                    err_noise=float(np.std(e - np.median(e))),
                    err_rms=float(np.sqrt(np.mean(e ** 2))),
@@ -423,6 +429,9 @@ def evaluate_line_detection(path, cap, image_name="CAST.png"):
         "id_ok": {k: (n_id_ok[k], n_id_tot[k]) for k in ("V", "H")},
         "sigma_u_design_px": CALIB.SIGMA_U_PX,
         "quantization_px": q_px, "quantization_mm": q_mm,
+        "dz_med_mm": _agg(v_rows, "dz_med_mm"),
+        "dz_noise_mm": _agg(v_rows, "dz_noise_mm"),
+        "dz_p95_mm": _agg(v_rows, "dz_p95_mm"),
     }
 
 
@@ -557,6 +566,121 @@ def _base_image(path, size, flipped=False, cx_img=None, cy_img=None,
             al = np.clip(lg / 200.0, 0.0, 1.0)[:, :, None] * 0.55
             scene = scene * (1 - al) + np.array([70.0, 245.0, 110.0]) * al
     return np.clip(scene, 0, 255).astype(np.uint8)
+
+
+def _agg(rows, key):
+    """선별 값의 대표치 — 중앙값."""
+    v = [r[key] for r in rows if r.get(key) is not None]
+    return round(float(np.median(v)), 3) if v else None
+
+
+def _depth_diff_mm(det_uv, gt_uv, lid, cap, cp_raw, su, flipped):
+    """
+    같은 행에서 검출 화소와 정답 화소를 각각 삼각측량해 깊이를 비교한다.
+
+    엑셀의 "깊이 환산" 열은 화소 오차에 dZ = Z²/(f·b) 를 곱한 값이라
+    선형 근사다. 이것은 근사가 아니라 실제로 두 번 풀어 뺀 값이다.
+    """
+    f = float(cp_raw["camera"]["f_px"])
+    b = float(cp_raw["baseline_m"])
+    cx = float(cp_raw["camera"]["cx_px"])
+    # 검측이 실제로 쓰는 발사각을 그대로 쓴다. 내보내기의 angle_deg 라벨은
+    # 화소와 부호가 맞지 않는 경우가 있어(H선 역순, 벽체 u축 반전) 그것을
+    # 쓰면 깊이가 통째로 틀린다 — 실제로 Z 가 1.55m 대신 0.19m 로 나왔다.
+    info = cap["line_angles"].get(lid)
+    if info is None:
+        return None, None, None
+    a_rad = float(info["angle_rad"])
+    d = np.asarray(det_uv, float)
+    g = np.asarray(gt_uv, float)
+    o = np.argsort(g[:, 1])
+    u_ref = np.interp(d[:, 1], g[o, 1], g[o, 0])
+
+    # 센서 스케일 + 검측 규약으로
+    ud = d[:, 0] * su
+    ug = u_ref * su
+    if flipped:
+        ud, ug = 2 * cx - ud, 2 * cx - ug
+    den_d = f * np.tan(a_rad) - (ud - cx)
+    den_g = f * np.tan(a_rad) - (ug - cx)
+    ok = (np.abs(den_d) > 1e-6) & (np.abs(den_g) > 1e-6)
+    if not ok.any():
+        return None, None, None
+    zd = f * b / den_d[ok]
+    zg = f * b / den_g[ok]
+    good = np.isfinite(zd) & np.isfinite(zg) & (zd > 0) & (zg > 0)
+    if not good.any():
+        return None, None, None
+    dz = (zd[good] - zg[good]) * 1000.0
+    med = float(np.median(dz))
+    return (round(med, 3), round(float(np.std(dz - med)), 3),
+            round(float(np.percentile(np.abs(dz), 95)), 3))
+
+
+def save_detection_overlay(path, cap, det, out_png, zoom=6, crop=140):
+    """
+    선검출이 실제 레이저 위에 얹혔는지 눈으로 확인하는 그림.
+
+    배경은 CAST.png(실제 레이저) 그대로, 그 위에 검출한 점을 자홍색으로
+    찍는다. 오른쪽에 한 곳을 확대해 붙인다 — 원본 크기에서는 선폭 2px,
+    오차 0.3px 라 겹침 여부가 눈에 보이지 않기 때문이다.
+
+    검측 결과 그림(_세그멘테이션.png)의 배경에는 레이저를 지워 두었다.
+    거기 남아 있던 CAM.png 격자는 화면 등간격으로 그려진 것이라 발사각을
+    따르는 검출점과 애초에 겹치지 않는다. 겹침 확인은 이 그림으로 한다.
+    """
+    if not det or det.get("error"):
+        return None
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    fp = os.path.join(path, det.get("image", "CAST.png"))
+    if not os.path.exists(fp):
+        return None
+    im = Image.open(fp).convert("RGB")
+    W, H = im.size
+    # 레이저를 초록으로 또렷하게
+    a = np.asarray(im, float)
+    g = a[:, :, 1] - 0.5 * (a[:, :, 0] + a[:, :, 2])
+    lay = np.zeros_like(a)
+    al = np.clip(g / max(g.max(), 1.0), 0, 1)[:, :, None]
+    lay = np.array([40.0, 235.0, 90.0]) * al + 18.0
+    im = Image.fromarray(np.clip(lay, 0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(im)
+    pts = []
+    for lid, arr in det.get("_detected", {}).items():
+        for u, v in np.asarray(arr, float)[::3]:
+            d.point((u, v), fill=(236, 72, 153))
+            pts.append((u, v))
+    if not pts:
+        return None
+
+    # 확대 삽입 — 선이 가장 조밀한 중앙부
+    cxc, cyc = W // 2, H // 2
+    box = (max(0, cxc - crop // 2), max(0, cyc - crop // 2),
+           min(W, cxc + crop // 2), min(H, cyc + crop // 2))
+    zi = im.crop(box).resize(((box[2] - box[0]) * zoom,
+                              (box[3] - box[1]) * zoom), Image.NEAREST)
+    canvas = Image.new("RGB", (W + zi.width + 24, max(H, zi.height)), (18, 18, 22))
+    canvas.paste(im, (0, 0))
+    canvas.paste(zi, (W + 24, 0))
+    cd = ImageDraw.Draw(canvas)
+    cd.rectangle(box, outline=(255, 255, 0), width=2)
+    cd.rectangle([W + 24, 0, W + 24 + zi.width - 1, zi.height - 1],
+                 outline=(255, 255, 0), width=2)
+    font = REPORT._korean_font(max(16, H // 45))
+    txt = (f"초록 = 실제 레이저(CAST)   자홍 = 선검출 결과   "
+           f"우측 {zoom}배 확대")
+    if font:
+        cd.rectangle([W + 30, zi.height + 8, W + 30 + int(cd.textlength(txt, font=font)) + 12,
+                      zi.height + 8 + font.size + 10], fill=(18, 18, 22))
+        cd.text((W + 36, zi.height + 12), txt, fill=(240, 240, 240), font=font)
+    dirn = os.path.dirname(os.path.abspath(out_png))
+    if dirn:
+        os.makedirs(dirn, exist_ok=True)
+    canvas.save(out_png)
+    return out_png
 
 
 def evaluate_end_to_end(path, cap, det, backend="geom", sigma_u_px=None):
@@ -730,6 +854,14 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
                 f"선검출에 {det_eval['err_bias_px']:+.2f}px 의 계통 편차가 있다"
                 f"(깊이 {det_eval['depth_bias_mm']:.1f}mm). 무작위 오차가 아니라"
                 f" 좌표 규약이 어긋난 것이므로 원인을 찾아 제거해야 한다.")
+    ov = None
+    if det_eval and not det_eval.get("error"):
+        try:
+            ov = save_detection_overlay(
+                path, cap, det_eval,
+                os.path.join(out_dir, f"{name}_선검출대조.png"))
+        except Exception:
+            ov = None
     e2e = None
     if det_eval and not det_eval.get("error"):
         try:
@@ -749,6 +881,8 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
                         meta=meta, seg_image_path=seg, extra_caveats=caveats,
                         detection=det_eval, end_to_end=e2e)
     print()
+    if ov:
+        print(f"  선검출 대조 이미지: {ov}")
     print(f"  세그멘테이션 이미지: {seg}")
     print(f"  엑셀 조서:          {xl}")
     return {"result": res, "capture": cap, "seg": seg, "xlsx": xl,

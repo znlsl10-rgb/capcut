@@ -234,17 +234,35 @@ def _sheet_detection(wb, openpyxl, det, e2e=None):
         ("H선 번호 일치", f"{det['id_ok']['H'][0]} / {det['id_ok']['H'][1]}", "",
          "H선은 삼각측량에 쓰지 않으므로 측정에는 영향 없음"),
         ("", "", "", ""),
+        ("[화소 오차] 무엇을 뺐나", "검출 u − 정답 u", "",
+         "같은 행(v)에서 선검출이 찾은 u 와 raycast 정답 u 의 차이. "
+         "깊이가 아니라 화면 좌표 차이다"),
         ("계통 편차 (중앙값)", f"{det['err_bias_px']:+.3f} px",
          f"{det['depth_bias_mm']:.1f} mm",
-         "좌표 규약·주점·기선이 어긋난 몫. 소프트웨어로 제거할 수 있다"),
+         "모든 점이 한쪽으로 치우친 몫. 좌표 규약·주점·기선이 어긋나면 "
+         "생기며 소프트웨어로 제거할 수 있다"),
         ("무작위 오차 (σ)", f"{det['err_noise_px']:.3f} px",
          f"{det['depth_noise_mm']:.1f} mm",
-         f"이것이 실제 검출 정밀도 σ_u 다. 설계 가정은 "
-         f"{det['sigma_u_design_px']} px"),
+         f"치우침을 뺀 나머지의 표준편차 = 점마다 제각각 흔들리는 몫. "
+         f"이것이 실제 검출 정밀도 σ_u 다 (설계 가정 "
+         f"{det['sigma_u_design_px']} px). 깊이 환산은 dZ = Z²/(f·b)·du"),
         ("전체 RMS", f"{det['err_rms_px']:.3f} px",
          f"{det['depth_err_mm']:.1f} mm", "계통 + 무작위"),
         ("95 백분위", f"{det['err_p95_px']:.3f} px", "", ""),
     ]
+    if det.get("dz_noise_mm") is not None:
+        rows += [
+            ("", "", "", ""),
+            ("[깊이 오차] 무엇을 뺐나", "검출 Z − 정답 Z", "",
+             "위의 두 화소를 각각 삼각측량해 나온 깊이의 차이. 환산이 "
+             "아니라 실제로 두 번 풀어 뺀 값이다"),
+            ("깊이 치우침", "", f"{det['dz_med_mm']:+.2f} mm",
+             "선별 중앙값의 중앙값"),
+            ("깊이 흔들림 (σ)", "", f"{det['dz_noise_mm']:.2f} mm",
+             "한 격자점의 깊이가 이만큼 흔들린다는 뜻. 면적합은 이를 "
+             "수만 점 평균해 지우지만, 평활도는 그대로 받는다"),
+            ("깊이 95 백분위", "", f"{det['dz_p95_mm']:.2f} mm", ""),
+        ]
     if det.get("quantization_px"):
         rows.append(("렌더 양자화 한계", f"{det['quantization_px']:.3f} px",
                      f"{det['quantization_mm']:.1f} mm",
