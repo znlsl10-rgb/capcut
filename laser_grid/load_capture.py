@@ -210,7 +210,8 @@ def load_folder(path, world_up=(0.0, 0.0, 1.0), stride=1):
     return {"lines_pixels": lines_pixels, "line_angles": line_angles,
             "camera_params": camera_params, "g_hat": g_hat, "R_cam": R,
             "R_raw": R_raw, "angles_raw": angles_raw, "b_raw": b_raw,
-            "diag": diag, "meta": meta, "raw": cp_raw, "cast": cast}
+            "diag": diag, "meta": meta, "raw": cp_raw, "cast": cast,
+            "stride": int(stride)}
 
 
 # =====================================================================
@@ -683,6 +684,51 @@ def save_detection_overlay(path, cap, det, out_png, zoom=6, crop=140):
     return out_png
 
 
+def verify_triangulation(cap, stride=None):
+    """
+    정답 화소를 삼각측량한 3D 를 내보내기의 xyz_world 와 맞대 본다.
+
+    이것이 확인하는 것은 **검출이 아니라 계산**이다. 화소가 완벽하다고
+    가정했을 때 f·주점·기선·자세·eq1 이 전부 맞물려 돌아가는지를 본다.
+    여기서 오차가 나오면 그 아래 모든 숫자가 의미가 없다.
+
+    선검출 정확도(검출 화소 vs 정답 화소)와는 다른 층이다.
+      이 함수      정답 화소 → 3D   vs  진짜 3D      … 계산이 맞는가
+      선검출 평가   검출 화소       vs  정답 화소     … 검출이 맞는가
+    """
+    # lines_pixels 를 만들 때 쓴 stride 를 그대로 써야 점 순서가 맞는다.
+    # 다른 값을 쓰면 서로 다른 점을 짝지어 오차가 미터 단위로 나온다.
+    stride = cap.get("stride", 1) if stride is None else stride
+    R = cap["R_cam"]
+    L = np.array(cap["raw"]["rig_transform"]["laser_pos_world"], float)
+    lx, _, _ = PIPE.triangulate_lines(cap["lines_pixels"], cap["line_angles"],
+                                      cap["camera_params"])
+    if not lx:
+        return None
+    got, truth = [], []
+    for lid, pts in lx.items():
+        ln = cap["cast"].get(lid)
+        if ln is None:
+            continue
+        src = ln["points"][::stride][:len(pts)]
+        P = np.array([p["xyz_world"] for p in src], float)
+        if len(P) == 0:
+            continue
+        Pl = (P - L) @ R
+        m = min(len(Pl), len(pts))
+        got.append(np.asarray(pts)[:m]); truth.append(Pl[:m])
+    if not got:
+        return None
+    D = np.vstack(got); T = np.vstack(truth)
+    e = np.linalg.norm(D - T, axis=1) * 1000.0
+    ez = (D[:, 2] - T[:, 2]) * 1000.0
+    return {"n_points": int(len(D)),
+            "dist_med_mm": round(float(np.median(e)), 5),
+            "dist_max_mm": round(float(e.max()), 5),
+            "z_med_mm": round(float(np.median(ez)), 5),
+            "z_sigma_mm": round(float(ez.std()), 5)}
+
+
 def evaluate_end_to_end(path, cap, det, backend="geom", sigma_u_px=None):
     """
     검출 화소로 검측까지 돌려 정답 화소 결과와 맞대 본다.
@@ -768,6 +814,15 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
     print("=" * 70)
     for k, v in cap["diag"].items():
         print(f"  {k:<24}{v}")
+
+    tri = None
+    try:
+        tri = verify_triangulation(cap)
+    except Exception:
+        tri = None
+    if tri:
+        print(f"  {'삼각측량 자체 검증':<24}정답 화소 → 3D 오차 중앙 "
+              f"{tri['dist_med_mm']:.4f}mm (최대 {tri['dist_max_mm']:.3f}mm)")
 
     lines_xyz, lines_uv, skipped = PIPE.triangulate_lines(
         cap["lines_pixels"], cap["line_angles"], cp)
@@ -893,7 +948,8 @@ def inspect_folder(path, out_dir=None, backend="geom", stride=1, site=None,
                 f"때문이다.")
     xl = XLS.save_excel(os.path.join(out_dir, f"{name}_품질검측조서.xlsx"), res,
                         meta=meta, seg_image_path=seg, extra_caveats=caveats,
-                        detection=det_eval, end_to_end=e2e)
+                        detection=det_eval, end_to_end=e2e,
+                        triangulation=tri)
     print()
     if ov:
         print(f"  선검출 대조 이미지: {ov}")

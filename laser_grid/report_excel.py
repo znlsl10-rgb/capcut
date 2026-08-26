@@ -196,7 +196,7 @@ def _sheet_design(wb, openpyxl):
     return ws
 
 
-def _sheet_detection(wb, openpyxl, det, e2e=None):
+def _sheet_detection(wb, openpyxl, det, e2e=None, tri=None):
     """
     선검출 정확도 — 화소가 맞아야 3D 가 맞는다.
 
@@ -219,7 +219,18 @@ def _sheet_detection(wb, openpyxl, det, e2e=None):
 
     mm = det.get("mm_per_px_depth")
     ws.append(["항목", "값", "깊이 환산", "비고"])
-    rows = [
+    rows = []
+    if tri:
+        rows += [
+            ("[0단계] 삼각측량 자체", "", "",
+             "정답 화소를 3D 로 풀어 내보내기의 xyz_world 와 맞댄 것. "
+             "검출이 아니라 계산(f·주점·기선·자세·eq1)이 맞는지 본다"),
+            ("3D 위치 오차", f"{tri['n_points']:,}점",
+             f"{tri['dist_med_mm']:.4f} mm",
+             f"최대 {tri['dist_max_mm']:.3f} mm — 계산 체인에 문제 없음"),
+            ("", "", "", ""),
+        ]
+    rows += [
         ("대조 이미지", det["image"], "",
          f"{det['image_size'][0]}×{det['image_size'][1]} "
          f"(센서 {det['f_px_sensor']:.0f}px 기준 배율 {det['scale_to_sensor']})"),
@@ -520,7 +531,7 @@ def _sheet_caveats(wb, openpyxl, record, extra=None):
 # =====================================================================
 def save_excel(path, result, meta=None, label_pixels=None,
                extra_caveats=None, seg_image_path=None, detection=None,
-               end_to_end=None):
+               end_to_end=None, triangulation=None):
     """
     검측 결과를 엑셀 조서로 저장한다.
 
@@ -537,7 +548,7 @@ def save_excel(path, result, meta=None, label_pixels=None,
     wb = openpyxl.Workbook()
     _sheet_summary(wb, openpyxl, record, dict(meta or {}), result)
     _sheet_design(wb, openpyxl)
-    _sheet_detection(wb, openpyxl, detection, end_to_end)
+    _sheet_detection(wb, openpyxl, detection, end_to_end, triangulation)
     _sheet_segmentation(wb, openpyxl, result, record, label_pixels,
                         seg_image_path)
     _sheet_results(wb, openpyxl, record)
